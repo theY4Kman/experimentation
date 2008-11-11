@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # =============================================================================
 # History
-#   A test implementation of delta objects for undo/redo
+#   A test implementation of delta objects for undo/redo. Runs in Bash.
 # Copyright (C) 2008 Zach "theY4Kman" Kanzler
 # =============================================================================
 #
