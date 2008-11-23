@@ -19,8 +19,6 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <cstdio>
-
 template<class K>
 class HeapPriorityQueue
 {
