@@ -1,7 +1,7 @@
 /**
  * =============================================================================
  * Expression Compiler
- *   Reads in arithmetic expressions and compiles them into assembly.
+ *   Reads in arithmetic expressions and compiles them into NASM assembly code.
  * Copyright (C) 2008 Zach "theY4Kman" Kanzler
  * =============================================================================
  *

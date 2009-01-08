@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # =============================================================================
-# Sieve of Eratosthenes
+# Project Euler - Problem 3:
+#   The prime factors of 13195 are 5, 7, 13 and 29.
+#   What is the largest prime factor of the number 600851475143 ? 
 # Copyright (C) 2008 Zach "theY4Kman" Kanzler
 # =============================================================================
 #
@@ -44,21 +46,18 @@ def erat(n):
     
     return numbers
 
+def solve():
+    max = 600851475143
+    primes = erat(10000)
+    
+    factor = 0
+    for i in primes:
+        if max % i == 0:
+            factor = i
+    
+    return factor
+
 if __name__ == "__main__":
-    print "Sieve of Eratosthenes program, by theY4Kman"
-    
-    import sys
-    n = 120
-    if len(sys.argv) < 2:
-        print "No upper limit supplied, using", n
-    else:
-        try:
-            user_n = long(sys.argv[1])
-            if user_n <= 2:
-                print "Upper limit too small, using", n
-            else:
-                n = user_n
-        except ValueError:
-            print "Supplied upper limit is not an integer, using", n
-    
-    print erat(n)
+    import profile
+    profile.run("solve()")
+

@@ -59,15 +59,32 @@ public:
     };
     
     /**
-     * Prepends an item to the end of the list.
+     * Prepends an item to the beginning of the list.
      */
     void prepend(const K& item)
     {
         listNode *first = m_pHead->next;
         
         listNode *new_node = new listNode();
-        new_node->item = item;
+        new_node->item = (K*)item;
         new_node->next = first;
         m_pHead->next = new_node;
+    };
+    
+    /**
+     * Appends an item to the end of the list.
+     */
+    void append(const K& item)
+    {
+        // Find the last node
+        listNode *this_node = m_pHead;
+        while(this_node->next != m_pButt) this_node = this_node->next;
+        
+        listNode *new_node = new listNode();
+        new_node->item = (K*)item;
+        new_node->next = m_pButt;
+        
+        // this_node is the last node in the list
+        this_node->next = new_node;
     };
 };
