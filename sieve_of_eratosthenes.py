@@ -22,12 +22,7 @@ def erat(n):
     # Create a list filled with ints from 2 to n, inclusive.
     numbers = range(2, n+1)
     
-    # Remove all multiples of 2
-    i = 0
-    if numbers[i] == 2:
-        i = 1
-    
-    length = len(numbers)
+    length = n - 2
     limit = int(sqrt(n))
     
     j = 0

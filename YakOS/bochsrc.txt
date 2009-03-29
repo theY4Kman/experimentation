@@ -5,7 +5,7 @@ vgaromimage: file=VGABIOS-lgpl-latest
 
 # boot from floppy using our disk image -------------------------------
 
-floppya:     1_44=/dev/fd0, status=inserted  # Boot from drive A
+floppya:     1_44=/dev/loop1, status=inserted  # Boot from drive A
 boot:        floppy
 
 # logging and reporting -----------------------------------------------

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # =============================================================================
-# Project Euler - Problem 3:
+# Project Euler - Problem 3
 #   The prime factors of 13195 are 5, 7, 13 and 29.
 #   What is the largest prime factor of the number 600851475143 ? 
 # Copyright (C) 2008 Zach "theY4Kman" Kanzler
@@ -58,6 +58,6 @@ def solve():
     return factor
 
 if __name__ == "__main__":
-    import profile
-    profile.run("solve()")
+    import cProfile
+    cProfile.run("print solve()")
 

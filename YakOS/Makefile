@@ -4,6 +4,9 @@ floppy: bootloader.asm
 
 stage2: stage2.asm
 	nasm -f bin stage2.asm -o YAKLDR.SYS
-	umount /dev/fd0
-	mount -t vfat vfloppy.img /dev/fd0 -o loop
-	cp YAKLDR.SYS /dev/fd0
+	/sbin/losetup -o 32256 /dev/loop1 vfloppy.img
+	mkdir -p /mnt/yakos
+	mount -t vfat /dev/loop1 /mnt/yakos
+	cp YAKLDR.SYS /mnt/yakos
+	umount /mnt/yakos
+	/sbin/losetup /dev/loop1 -d

@@ -1,24 +1,3 @@
-/**
- * =============================================================================
- * Expression Compiler
- *   Reads in arithmetic expressions and compiles them into NASM assembly code.
- * Copyright (C) 2008 Zach "theY4Kman" Kanzler
- * =============================================================================
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License, version 3.0, as published by the
- * Free Software Foundation.
- * 
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-
 #include <stdio.h>
 #include <string.h>
 
@@ -90,10 +69,16 @@ int main(int argc, char *argv[])
     }
     
     printf("\tpush\tdword outputfmt\n"\
-           "\tcall\tprintf\n"\
-           "\tmov\teax, 1\n"\
+           "\tcall\tprintf\n");
+#ifdef __GNUC__
+    printf("\tmov\teax, 1\n"\
 	       "\tmov\tebx, 0\n"\
            "\tint\t80h\n");
+#elif defined(_WIN32)
+    printf("\tmov\teax, 0xf\n"\
+           "\tmov\tedx, 0\n"\
+           "\tint\t21h\n");
+#endif
     
     return 0;
 }
