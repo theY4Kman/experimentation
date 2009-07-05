@@ -1,0 +1,44 @@
+<pre>
+
+from <a href="http://www.python.org/doc/current/lib/module-math.html">math</a> import <a href="http://www.python.org/doc/current/lib/module-sqrt.html">sqrt</a>
+
+<b>def </b><b style="background-color:ffff00"><a name="erat">erat</b>(n):
+    <font color="cc33cc"># Create a list filled with ints from 2 to n, inclusive.</font>
+    numbers = range(2, n+1)
+
+    <font color="cc33cc"># Remove all multiples of 2</font>
+    i = 0
+    if numbers[i] == 2:
+        i = 1
+
+    length = len(numbers)
+    limit = int(sqrt(n))
+
+    j = 0
+    while numbers[j] &lt;= limit:
+        i = 2
+        prime_check = numbers[j]
+        while i &lt; length:
+            if numbers[i] % prime_check == 0:
+                numbers.pop(i)
+                length -= 1
+            else:
+                i += 1
+        j += 1
+
+    return numbers
+
+<b>def </b><b style="background-color:ffff00"><a name="solve">solve</b>():
+    max = 600851475143
+    primes = erat(10000)
+
+    factor = 0
+    for i in primes:
+        if max % i == 0:
+            factor = i
+
+    return factor
+
+if __name__ == <i><font color="green">"__main__"</font></i>:
+    print solve()
+</pre>
