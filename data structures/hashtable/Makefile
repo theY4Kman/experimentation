@@ -1,2 +1,2 @@
 default:
-	g++ -g yakhashtest.cpp -o yakhashtest
+	gcc -g yakhashtest.cpp -o yakhashtest -lstdc++

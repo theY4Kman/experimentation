@@ -19,6 +19,7 @@
  */
 
 #include <malloc.h>
+#include <new>
 #include <cstring>
 #include <assert.h>
 
@@ -39,7 +40,7 @@ public:
     }
 
 private:
-    enum YakHashNodeTyhpe
+    enum YakHashNodeType
     {
         NodeType_Element = 0,
         NodeType_Bucket,

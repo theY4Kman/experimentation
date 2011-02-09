@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # =============================================================================
-# Project Euler - Problem 14
-#   Find the longest sequence using a starting number under one million.
-# Copyright (C) 2009 Zach "theY4Kman" Kanzler
+# Triangle Numbers
+#   Functions and generators associated with triangle numbers
+# Copyright (C) 2010 Zach "theY4Kman" Kanzler
 # =============================================================================
 #
 # This program is free software; you can redistribute it and/or modify it under
@@ -16,3 +16,12 @@
 #
 # You should have received a copy of the GNU General Public License along with
 # this program.  If not, see <http://www.gnu.org/licenses/>.
+
+def triangle_gen():
+    """Generates triangle numbers"""
+    triangle = 0
+    next = 1
+    while True:
+        triangle += next
+        yield triangle
+        next += 1
