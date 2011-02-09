@@ -22,6 +22,7 @@ import ConfigParser
 
 import pygame
 pygame.init()
+import pygame.gfxdraw
 
 RGX_TUPLE = re.compile(r'\((\d+),(\d+)\)')
 
@@ -64,6 +65,11 @@ class Drawable:
 class Connectable(Drawable):
   prev = None # Previous gate or wire
   next = None # Next gate or wire
+  
+  def add_next(self, gate):
+    if self.next is None:
+      self.next = []
+    self.next.append(gate)
 
 
 class Wire(Connectable):
@@ -78,6 +84,8 @@ class Gate(Connectable):
   input_locs = None
   output_loc = None
   surface = None
+  # Connectables for the inputs
+  inputs = None
   
   def _parse_tuple(self, s):
     match = RGX_TUPLE.match(s.replace(' ', ''))
@@ -91,12 +99,13 @@ class Gate(Connectable):
   
   def __init__(self, window):
     self.window = window
+    self.inputs = []
     
     # Parse the locations of the inputs and output from the config file
-    input_locs = [self._parse_tuple(self.window.images.get(
+    self.input_locs = [self._parse_tuple(self.window.images.get(
         self.__class__.__name__, 'input'+str(cfg))) for cfg in
         xrange(0,self.num_inputs)]
-    output_loc = self._parse_tuple(self.window.images.get(
+    self.output_loc = self._parse_tuple(self.window.images.get(
         self.__class__.__name__, 'output'))
   
   def get_surface(self):
@@ -126,6 +135,19 @@ class Gate(Connectable):
     
     size = self.get_surface().get_size()
     return pygame.Rect(x,y, x+size[0], y+size[1])
+  
+  def add_input(self, gate):
+    '''
+    Adds an input to the gate's saved inputs list. Returns the index into
+    self.inputs of the gate added if the gate was successfully added and None if
+    there are too many inputs already registered.
+    '''
+    inputs_len = len(self.inputs)
+    if inputs_len >= self.num_inputs:
+      return None
+    
+    self.inputs.append(gate)
+    return inputs_len
 
 
 class NotGate(Gate):
@@ -191,7 +213,6 @@ class NandGate(Gate):
     return 1 if not(inputs[0] and inputs[1]) else 0
 
 
-# TODO: Images for Gnd and Vdd
 class GndGen(Gate):
   name = '0'
   num_inputs = 0
@@ -206,6 +227,17 @@ class VddGen(Gate):
   
   def get_output(self, inputs):
     return 1
+
+
+class ReaderGate(Gate):
+  '''Reads the input and displays it for the user'''
+  name = 'Reader'
+  num_inputs = 1
+  
+  @check_inputs
+  def get_output(self, inputs):
+    print inputs[0] ############
+    return inputs[0]
 
 
 class Menu(Drawable):
@@ -233,7 +265,7 @@ class Menu(Drawable):
     self.gate = None
     self.gate_redraw = False
     
-    for x,gate in enumerate(self.window.gates.values()):
+    for x,gate in enumerate(self.window.gates_list):
       self.gates.append(gate)
       self.draw_gate(x)
     
@@ -338,6 +370,7 @@ class Board(Drawable):
     
     # The gate that's been selected for connection with a right-click
     self.selected_gate = None
+    self.selected_gate_idx = None
     
     self.surface = pygame.Surface((self.window.width,
         self.window.height-self.window.menu.height))
@@ -348,9 +381,9 @@ class Board(Drawable):
     self.vdd = VddGen(self.window)
     
     # Draw the gnd and vdd
+    self._draw_gate(self.vdd, 0, 0)
     self._draw_gate(self.gnd, 0, self.surface.get_height()
         - self.window.menu.gate_width)
-    self._draw_gate(self.vdd, 0, 0)
     
     # A list of all the gates registered on this board. The list is in the
     # format [(Rect,Gate)], where the origin is the top left. The origin for the
@@ -383,6 +416,42 @@ class Board(Drawable):
     # Draws the specified gate at the specified coordinates
     gate.draw(self.surface, x, y)
   
+  def draw_line(self, gate1, gate2, input_idx):
+    '''
+    Draws a circuit line from gate1's output to the input specified by input_idx
+    on gate2. gate1 and gate2 are indices into self.gates.
+    
+    Returns the rect to be used for invalidation
+    '''
+    gates_len = len(self.gates)
+    if not (0 <= gate1 < gates_len) or not (0 <= gate2 < gates_len):
+      # Bad index into gate
+      print "Bad index into gate" ##################
+      return None
+    
+    gate1_rect,gate1_gate = self.gates[gate1]
+    gate2_rect,gate2_gate = self.gates[gate2]
+    
+    if not (0 <= input_idx < gate2_gate.num_inputs):
+      # Bad index into gate inputs
+      print "Bad index into gate inputs" ##################
+      return None
+    
+    # Determine the coordinates for the line on self.surface
+    output_coord = (gate1_rect.left + gate1_gate.output_loc[0], gate1_rect.top
+        + gate1_gate.output_loc[1])
+    input_coord = (gate2_rect.left + gate2_gate.input_locs[input_idx][0],
+        gate2_rect.top + gate2_gate.input_locs[input_idx][1])
+    
+    print output_coord, input_coord############
+    
+    # Draw the line
+    rect = pygame.draw.line(self.surface, (0,0,0), output_coord, input_coord)
+    #rect.top += self.window.menu.height
+    rect.bottom += self.window.menu.height
+    
+    return rect
+  
   def onrightclick(self, x, y):
     screen_x,screen_y = x,y
     x,y = self.translate_coords(x,y)
@@ -391,24 +460,44 @@ class Board(Drawable):
     new_rect = pygame.Rect(x,y, gate_width,gate_width)
     
     found_gate = None
-    for rect,gate in self.gates:
-      gx,gy = rect.left,rect.top
-      print gx,gy,gate##############
-      if gx <= x <= gx+gate_width and gy <= y <= gy+gate_width:
+    found_gate_idx = None
+    
+    for idx,tup in enumerate(self.gates):
+      rect,gate = tup
+      if rect.collidepoint(x,y):
         # Clicked on an existing gate
         found_gate = gate
-    print found_gate#############
+        found_gate_idx = idx
     
     if found_gate is None:
       return
     
     if self.selected_gate is None:
       # First selection
+      print "Selected", found_gate ######################
       self.selected_gate = found_gate
+      self.selected_gate_idx = found_gate_idx
     else:
       # Already saved a previously selected gate, connect the two
-      self.selected_gate.next = found_gate
+      print "Connecting %s and %s" % (self.selected_gate, found_gate)#########
+      
+      input_idx = found_gate.add_input(self.selected_gate)
+      if input_idx is None:
+        print "Too many inputs already attached to", found_gate ############
+        self.selected_gate = None
+        self.selected_gate_idx = None
+        return
+      
+      self.selected_gate.add_next(found_gate)
       found_gate.prev = self.selected_gate
+      
+      # Draw circuit line
+      rect = self.draw_line(self.selected_gate_idx, found_gate_idx, input_idx)
+      self.gate_rects.append(rect)
+      self.window.reg_draw(self)
+      
+      self.selected_gate = None
+      self.selected_gate_idx = None
   
   def onclick(self, x, y):
     screen_x,screen_y = x,y
@@ -480,9 +569,12 @@ class Window:
     self.gate_surfaces = {}
     
     self.gates = {}
-    for cls in [NotGate, OrGate, NorGate, XorGate, XnorGate, AndGate, NandGate]:
+    self.gates_list = []
+    for cls in [NotGate, OrGate, NorGate, XorGate, XnorGate, AndGate, NandGate,
+        ReaderGate]:
       gate = cls(self)
       self.gates[gate.name] = gate
+      self.gates_list.append(gate)
   
   def reg_draw(self, drawable):
     '''Add the drawable to the needs-to-be-redrawn list'''
