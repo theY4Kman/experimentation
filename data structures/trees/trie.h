@@ -1,6 +1,7 @@
 /**
  * =============================================================================
  *   Trie. Yak Trie.
+ *   Copyright (C) 2011 Zach "theY4Kman" Kanzler
  * =============================================================================
  * 
  * A combination of a Patricia tree and a de la Briandias tree, meaning it fol-
