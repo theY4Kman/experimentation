@@ -22,10 +22,6 @@ Neuron is created for every unique name in the database. (XXX: should this be
 for each unique name in a column?) Each Neuron's name is used as a key in a
 dictionary, whose value is a list of all the Neurons it excites, beginning with
 itself. The other Neurons in a Neuron's pool are inhibitors.
-
-Neuron's have a weight associated with them. If they are excited with a value
-that matches or exceeds the Neuron's activation value, the Neuron's output
-becomes its weight (with some decay).
 """
 
 # Highest activation value of a neuron
