@@ -126,7 +126,7 @@ def print_pools():
       print "%8s%5.2f" % (neuron.name + ':', neuron.activation),
       if x % 4 == 3:
         print
-    print
+    print "\n"
 
 
 def run(cycles=100):

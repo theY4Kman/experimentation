@@ -1,25 +1,3 @@
-================================================================================
-================================================================================
-Copyright (C) 2008 Zach "theY4Kman" Kanzler
+    This repository is where I put any little projects that don't seem official enough to warrant their own repositories. The scripts here can range from a single function implementing an algorithm, a class implementing a data structure, or an entire game or program. The languages used vary from assembly to C/C++ to Python.
 
-This program is free software; you can redistribute it and/or modify it under
-the terms of the GNU General Public License, version 3.0, as published by the
-Free Software Foundation.
-
-This program is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-details.
-
-You should have received a copy of the GNU General Public License along with
-this program.  If not, see <http://www.gnu.org/licenses/>.
-================================================================================
-================================================================================
-
-    These are a few scripts, programs, and snippets I've thrown together without
-much purpose other than to test out a method or to implement an algorithm. Some
-of them may prove to be useful to others when trying to implement these algo-
-rithms themselves.
-
-    I hope _you_ can find some use for them!
-
+    I hope you can find a use for something here!
