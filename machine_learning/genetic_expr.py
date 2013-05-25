@@ -41,6 +41,7 @@ def split_n_chars(s, n=GENE_BIT_LENGTH):
 def roulette_wheel(popfit):
     """Takes an iterable of (chromosome, fitness) and returns a random choice,
     taking fitness values into account."""
+    assert popfit
     maxval = sum(abs(fitness) for _,fitness in popfit)
     pick = random.uniform(0, maxval)
     current = 0
