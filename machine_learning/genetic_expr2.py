@@ -128,7 +128,7 @@ class Chromosome(object):
             mutated_bits.append(bit)
 
         mutated_gene_string = ''.join(mutated_bits)
-        return Chromosome(mutated_gene_string, self.solution)
+        return self.__class__(mutated_gene_string, self.solution)
 
     @classmethod
     def random(cls, solution, num_genes):
@@ -151,6 +151,8 @@ class Chromosome(object):
 
 
 class Simulation(object):
+    chromosome_class = Chromosome
+
     def __init__(self, solution, population_size=30, chromosome_size=30,
                  crossover_rate=0.8, mutation_rate=0.01, max_iterations=1000,
                  verbosity=VERB_NONE):
@@ -167,7 +169,8 @@ class Simulation(object):
         self.population = self._generate_random_population()
 
     def _generate_random_population(self):
-        return [Chromosome.random(self.solution, self.chromosome_size)
+        return [self.chromosome_class.random(self.solution,
+                                             self.chromosome_size)
                 for _ in xrange(self.population_size)]
 
     def step(self):
@@ -209,7 +212,7 @@ class Simulation(object):
 
         # See if we should crossover
         if random.random() <= self.crossover_rate:
-            a, b = Chromosome.crossover(a, b)
+            a, b = self.chromosome_class.crossover(a, b)
 
         a = a.mutate(self.mutation_rate)
         b = b.mutate(self.mutation_rate)
@@ -264,8 +267,9 @@ class Simulation(object):
         iterations, solution_chromosome = self._run(max_iterations)
 
         if solution_chromosome:
-            gene_symbols = '   '.join(Chromosome.GENE_VALUE_BITS.get(gene_value, ' ')
-                                      for gene_value in solution_chromosome.genes)
+            gene_symbols = '   '.join(
+                self.chromosome_class.GENE_VALUE_BITS.get(gene_value, ' ')
+                for gene_value in solution_chromosome.genes)
 
             summary = 'Solution found in %d iteration(s): %d = %s\n%s\n%s' % (
                 iterations, self.solution, solution_chromosome.decoded,
