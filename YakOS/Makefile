@@ -1,6 +1,6 @@
 floppy: bootloader.asm
 	nasm -f bin bootloader.asm -o bootloader.bin
-	dd if=bootloader.bin of=vfloppy.img bs=1440000 count=1 conv=sync
+	dd if=bootloader.bin of=vfloppy.img bs=1474560 count=1 conv=sync
 
 stage2: stage2.asm
 	nasm -f bin stage2.asm -o YAKLDR.SYS
