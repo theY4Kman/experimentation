@@ -5,14 +5,12 @@ import (
 	"strings"
 )
 
-
 type trieNode struct {
 	symbol string
 	value  interface{}
 	next   *trieNode
 	child  *trieNode
 }
-
 
 type Trie struct {
 	root trieNode
@@ -25,7 +23,7 @@ func NewTrie() Trie {
 func (tr *Trie) Set(k string, v interface{}) {
 	start := 0
 
-	Traversal:
+Traversal:
 	for node := &tr.root; node != nil; {
 		s := k[start:]
 		for i := 0; i < len(s) && i < len(node.symbol); i++ {
@@ -36,14 +34,14 @@ func (tr *Trie) Set(k string, v interface{}) {
 				// e.g. "car" into {"cat"}
 				child_b := trieNode{
 					symbol: node.symbol[i:],
-					value: node.value,
-					child: node.child,
+					value:  node.value,
+					child:  node.child,
 				}
 
 				child_a := trieNode{
 					symbol: s[i:],
-					value: v,
-					next: &child_b,
+					value:  v,
+					next:   &child_b,
 				}
 
 				node.child = &child_a
@@ -55,14 +53,14 @@ func (tr *Trie) Set(k string, v interface{}) {
 					// e.g. "cat" into {"car"}
 					child_b := trieNode{
 						symbol: s[i:],
-						value: v,
+						value:  v,
 					}
 
 					child_a := trieNode{
 						symbol: node.symbol[i:],
-						value: node.value,
-						next: &child_b,
-						child: node.child,
+						value:  node.value,
+						next:   &child_b,
+						child:  node.child,
 					}
 
 					node.child = &child_a
@@ -89,7 +87,7 @@ func (tr *Trie) Set(k string, v interface{}) {
 				// e.g. "cart" into {"car"}
 				node.child = &trieNode{
 					symbol: s[len(node.symbol):],
-					value: v,
+					value:  v,
 				}
 				return
 			}
@@ -98,8 +96,8 @@ func (tr *Trie) Set(k string, v interface{}) {
 			// e.g. "car" into {"cart"}
 			child := trieNode{
 				symbol: node.symbol[len(s):],
-				value: node.value,
-				child: node.child,
+				value:  node.value,
+				child:  node.child,
 			}
 
 			node.symbol = s
@@ -118,7 +116,7 @@ func (tr *Trie) Set(k string, v interface{}) {
 func (tr *Trie) Get(k string) interface{} {
 	start := 0
 
-	Traversal:
+Traversal:
 	for node := tr.root.child; node != nil; {
 		s := k[start:]
 		for i := 0; i < len(s) && i < len(node.symbol); i++ {
@@ -160,9 +158,9 @@ func (tr *Trie) Delete(k string) {
 
 func debugPrint(node *trieNode, indent string) {
 	for sibling := node; sibling != nil; sibling = sibling.next {
-		fmt.Printf("%-30s%s\n", indent + node.symbol, node.value)
+		fmt.Printf("%-30s%s\n", indent+node.symbol, node.value)
 		if sibling.child != nil {
-			debugPrint(sibling.child, indent + strings.Repeat(" ", len(node.symbol)))
+			debugPrint(sibling.child, indent+strings.Repeat(" ", len(node.symbol)))
 		}
 	}
 }
