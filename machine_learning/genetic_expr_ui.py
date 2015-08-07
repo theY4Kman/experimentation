@@ -111,20 +111,12 @@ class GeneticExprUI(object):
                                               fill=gene_color)
             bbox = self.canvas.bbox(text_id)
             ids.append(text_id)
+
         if chromosome.is_solution:
-            value_ids = []
-            gene_width = bbox[2] - bbox[0]
-            val_bbox = (x + gene_width / 2, bbox[1] + 5) * 2
-            for gene_value in chromosome.genes:
-                value_id = self.canvas.create_text(
-                    (val_bbox[2] + gene_width, val_bbox[1]), text=gene_value,
-                    fill='white')
-                val_bbox = self.canvas.bbox(value_id)
-                value_ids.append(value_id)
             self.canvas.create_rectangle(
-                ((orig_bbox[0] - 18,) + (y,) + val_bbox[2:]),
+                ((orig_bbox[0] - 5, y) + bbox[2:]),
                 fill='', outline='white')
-            ids += value_ids
+
         return ids
 
     def _draw_top_status(self, x=0, y=0):
@@ -132,7 +124,7 @@ class GeneticExprUI(object):
         equals_bbox = self._draw_equals_sign(sol_bbox[2], y)
 
         right_x = self.tk.winfo_width()
-        self._draw_iteration(right_x, y)
+        self._draw_iteration(right_x - 20, y)
 
         middle_y = float(equals_bbox[1] + equals_bbox[3]) / 2
 
