@@ -29,7 +29,6 @@ Traversal:
 		for i := 0; i < len(s) && i < len(node.symbol); i++ {
 			kc, nc := s[i], node.symbol[i]
 			if kc < nc {
-
 				// key is lex. lower than symbol -- split node into children, us first
 				// e.g. "car" into {"cat"}
 				child_b := trieNode{
