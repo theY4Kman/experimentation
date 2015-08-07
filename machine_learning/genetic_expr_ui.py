@@ -87,6 +87,7 @@ class GeneticExprUI(object):
             self.iteration += 1
             self.solution_chromosome = self.sim.step()
 
+        self.tk.update()
         self.tk.after(self.MILLISECONDS_PER_FRAME, self._run)
 
     def run(self):
