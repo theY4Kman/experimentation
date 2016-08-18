@@ -570,8 +570,7 @@ class Window:
     
     self.gates = {}
     self.gates_list = []
-    for cls in [NotGate, OrGate, NorGate, XorGate, XnorGate, AndGate, NandGate,
-        ReaderGate]:
+    for cls in [NotGate, OrGate, NorGate, XorGate, XnorGate, AndGate, NandGate]:
       gate = cls(self)
       self.gates[gate.name] = gate
       self.gates_list.append(gate)
