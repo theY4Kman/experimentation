@@ -1,9 +1,19 @@
 #!/usr/bin/python
 # Uses a genetic algorithm to find an arithmetic expression which evaluates to
 # a certain solution.
+
+from __future__ import print_function
+
 import argparse
+import math
 import os
 import random
+from typing import Optional, Union
+
+try:
+    xrange
+except NameError:  # Python 3
+    xrange = range
 
 
 # Levels of verbosity
@@ -35,7 +45,9 @@ def round_up_div(a, b):
 
 def string_to_bits(s):
     """Return a bitstring representing each char in s"""
-    return ''.join(ndigit_bin(ord(c), 8) for c in s)
+    if isinstance(s, str):
+        s = [ord(c) for c in s]
+    return ''.join(ndigit_bin(c, 8) for c in s)
 
 
 class Chromosome(object):
@@ -52,10 +64,10 @@ class Chromosome(object):
         self.solution = solution
         self.gene_string = gene_string
         self.genes = split_n_chars(self.gene_string, 4)
-        self.decoded = self._decode()
-        self.evaluated = self._evaluate(self.decoded)
-        self.fitness = self._calculate_fitness()
-        self.is_solution = self.fitness is None
+        self.decoded = self.decode()
+        self.evaluated = self.evaluate(self.decoded)
+        self.is_solution = self.evaluated == solution
+        self.fitness = self.calculate_fitness()
 
     def __repr__(self):
         return '%s(%r, %r)' % (self.__class__.__name__, self.gene_string,
@@ -77,40 +89,38 @@ class Chromosome(object):
     def __hash__(self):
         return hash((self.solution, self.gene_string))
 
-    def _decode(self):
+    def decode(self):
         expr = []
-        need_digit = True
         for gene_value in self.genes:
-            value = self._decode_gene(gene_value)
+            value = self.decode_gene(gene_value)
             if value is None:
                 continue
 
-            if need_digit:
-                if value in self.GENE_VALUE_DIGITS:
-                    expr.append(value)
-                    need_digit = False
-            elif value in self.GENE_VALUE_OPERATORS:
+            if value in self.GENE_VALUE_DIGITS or value in self.GENE_VALUE_OPERATORS:
                 expr.append(value)
-                need_digit = True
 
         # Catches the case of an operator at the end of the chromosome (useless)
-        if expr and need_digit:
+        while expr and expr[-1] in self.GENE_VALUE_OPERATORS:
             expr.pop()
 
         return ''.join(expr)
 
-    def _decode_gene(self, gene_value):
+    def decode_gene(self, gene_value):
         return self.GENE_VALUE_BITS.get(gene_value)
 
-    def _calculate_fitness(self):
+    def calculate_fitness(self):
         if self.evaluated is None:
             return 0.0
-        try:
-            return 1.0 / (self.solution - self.evaluated)
-        except ZeroDivisionError:
-            return None
 
-    def _evaluate(self, expr):
+        is_integer = self.evaluated.is_integer() if isinstance(self.evaluated, float) else True
+        int_bias = 1 if is_integer else 0.5
+
+        try:
+            return 1.0 / int(self.solution - self.evaluated) * int_bias
+        except ZeroDivisionError:
+            return 1.0
+
+    def evaluate(self, expr) -> Optional[Union[float, int]]:
         """Returns None if the evaluation fails"""
         if not expr:
             return None
@@ -154,17 +164,18 @@ class Simulation(object):
     chromosome_class = Chromosome
 
     def __init__(self, solution, population_size=30, chromosome_size=30,
-                 crossover_rate=0.8, mutation_rate=0.01, max_iterations=1000,
+                 crossover_rate=0.8, base_mutation_rate=0.01, max_iterations=1000,
                  verbosity=VERB_NONE):
         self.verbosity = verbosity
 
+        self.iteration = 1
         self.max_iterations = max_iterations
         self.solution = solution
 
         self.chromosome_size = chromosome_size
         self.population_size = population_size
         self.crossover_rate = crossover_rate
-        self.mutation_rate = mutation_rate
+        self.base_mutation_rate = base_mutation_rate
 
         self.population = self._generate_random_population()
 
@@ -193,8 +204,7 @@ class Simulation(object):
 
     def _roulette_wheel(self):
         """Returns a random chromosome (random with respect to fitness)"""
-        total_fitness = sum(abs(chromosome.fitness)
-                            for chromosome in self.population)
+        total_fitness = self._get_total_fitness()
         pick = random.uniform(0, total_fitness)
         current = 0.0
         for chromosome in self.population:
@@ -206,16 +216,52 @@ class Simulation(object):
             # values are 0.0), revert to a random choice.
             return random.choice(self.population)
 
+    def _select_chromosomes(self, n=1):
+        """Return a number of chromosomes, with respect to fitness
+        """
+        chromosomes = self.population
+
+        for i in xrange(n):
+            chromosomes = set(sorted(chromosomes, key=lambda c: c.fitness, reverse=i % 2 == 1))
+
+            total_fitness = sum(abs(chromosome.fitness) for chromosome in chromosomes)
+            pick = random.uniform(0, total_fitness)
+            current = 0.0
+            for chromosome in chromosomes:
+                current += abs(chromosome.fitness)
+                if current > pick:
+                    chromosomes.remove(chromosome)
+                    yield chromosome
+                    break
+            else:
+                # If no chromosome is selected (which can happen if all fitness
+                # values are 0.0), revert to a random choice.
+                yield chromosomes.pop()
+
+            if not chromosomes:
+                break
+
+    def _get_total_fitness(self):
+        return sum(abs(chromosome.fitness) for chromosome in self.population)
+
     def _new_children(self):
-        a = self._roulette_wheel()
-        b = self._roulette_wheel()
+        a, b = self._select_chromosomes(2)
+
+        generation_multiplier = 2 - math.log(self.iteration % 100 + 1, 100)
+        generation_multiplier_alt = 2 - math.log(101 - self.iteration % 100, 100)
 
         # See if we should crossover
         if random.random() <= self.crossover_rate:
             a, b = self.chromosome_class.crossover(a, b)
 
-        a = a.mutate(self.mutation_rate)
-        b = b.mutate(self.mutation_rate)
+        # time_multiplier = (1 + math.log(self.iteration))
+        mutation_rate = self.base_mutation_rate * generation_multiplier - random.random() * self.base_mutation_rate * generation_multiplier
+
+        a_mutation_rate = mutation_rate * (1 - abs(a.fitness) + random.random() * generation_multiplier)
+        b_mutation_rate = mutation_rate * (1 - abs(b.fitness) + random.random() * generation_multiplier)
+
+        a = a.mutate(a_mutation_rate)
+        b = b.mutate(b_mutation_rate)
 
         return a, b
 
@@ -226,6 +272,8 @@ class Simulation(object):
 
     def _run(self, max_iterations):
         for iteration in xrange(max_iterations):
+            self.iteration = iteration
+
             self._print('{:#^30}'.format(' ITERATION %d ' % iteration), VERB_INFO)
             self._print('{:*^30}'.format(' SOLUTION: %d ' % self.solution), VERB_INFO)
             self._print_population(VERB_INFO)
@@ -246,7 +294,7 @@ class Simulation(object):
 
     def _print_population(self, level=VERB_NONE):
         if self.verbosity >= level:
-            print self._str_population()
+            print(self._str_population())
 
     def _get_chromosome_summary(self, chromosome):
         if chromosome.fitness is None:
@@ -281,7 +329,7 @@ class Simulation(object):
 
     def _print(self, msg, level):
         if self.verbosity >= level:
-            print msg
+            print(msg)
 
 
 def main(argv):
