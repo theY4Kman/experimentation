@@ -108,17 +108,24 @@ class Chromosome(object):
     def decode_gene(self, gene_value):
         return self.GENE_VALUE_BITS.get(gene_value)
 
-    def calculate_fitness(self):
+    def calculate_fitness(self) -> float:
         if self.evaluated is None:
             return 0.0
 
         is_integer = self.evaluated.is_integer() if isinstance(self.evaluated, float) else True
         int_bias = 1 if is_integer else 0.5
 
-        try:
-            return 1.0 / int(self.solution - self.evaluated) * int_bias
-        except ZeroDivisionError:
+        if is_integer and self.solution == self.evaluated:
             return 1.0
+
+        # Without a maximum possible non-solution score, 1 / (goal - eval) would be 1 / 1
+        # if `eval` was only 1 away from `goal`.
+        max_score = 0.96
+
+        try:
+            return max_score * 1.0 / int(abs(self.solution - self.evaluated)) * int_bias
+        except ZeroDivisionError:
+            return 0.0
 
     def evaluate(self, expr) -> Optional[Union[float, int]]:
         """Returns None if the evaluation fails"""

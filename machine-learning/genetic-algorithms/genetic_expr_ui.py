@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import random
+from bisect import bisect
 
 try:
     from Tkinter import *
@@ -20,6 +21,10 @@ class UIChromosome(Chromosome):
     def __init__(self, gene_string, solution):
         self.gene_colors = []
         super(UIChromosome, self).__init__(gene_string, solution)
+
+        self.decoded_str = '?'
+        if self.decoded:
+            self.decoded_str = self.decoded.replace('*', '×').replace('/', '÷')
 
     def decode(self):
         expr = []
@@ -58,6 +63,46 @@ class UIChromosome(Chromosome):
 
         return ''.join(expr)
 
+    def get_value_color(self) -> str:
+        red         = (1.0, 0.0, 0.0)
+        orange      = (1.0, 0.5, 0.0)
+        yellow      = (1.0, 1.0, 0.0)
+        dark_green  = (0.0, 0.7, 0.0)
+        green       = (0.0, 1.0, 0.0)
+
+        steps = [
+            (0.00, red),
+            (0.10, orange),
+            (0.50, yellow),
+            (0.96, dark_green),
+            (0.97, green),
+        ]
+        thresholds, colors = zip(*steps)
+
+        to_index = bisect(thresholds, self.fitness)
+        if to_index >= len(colors):
+            amplitudes = colors[-1]
+        elif to_index == 0:
+            amplitudes = colors[0]
+        else:
+            from_index = to_index - 1
+            from_threshold, from_color = steps[from_index]
+            to_threshold, to_color = steps[to_index]
+
+            distance = (self.fitness - from_threshold) / (to_threshold - from_threshold)
+
+            distance /= 0.5
+            amplitudes = tuple(
+                min(1, max(0, from_comp + distance * (to_comp - from_comp)))
+                for from_comp, to_comp in zip(from_color, to_color)
+            )
+
+        components = tuple(
+            round(amplitude * 255)
+            for amplitude in amplitudes
+        )
+        return '#%02x%02x%02x' % components
+
 
 class UISimulation(Simulation):
     chromosome_class = UIChromosome
@@ -81,6 +126,11 @@ class GeneticExprUI(object):
         self.pause_button.bind('<Button-1>', self.on_pause_button_pressed)
         self.pause_button.pack(side=LEFT)
         self.tk.bind('<space>', self.on_pause_button_pressed)
+
+        self.step_button = Button(self.button_frame, text='⏽︎⏵︎')
+        self.step_button.bind('<Button-1>', self.on_step_button_pressed)
+        self.step_button.pack(side=LEFT)
+        self.tk.bind('<space>', self.on_step_button_pressed)
 
         self.new_button = Button(self.button_frame, text='New Simulation')
         self.new_button.bind('<Button-1>', self.on_new_simulation_button_pressed)
@@ -109,7 +159,9 @@ class GeneticExprUI(object):
         self.solution_chromosome = None
         self.drawn_solution = False
         self._paused = False
+        self.paused = False
 
+        self.tk.update()
         self._resize()
 
     def run(self):
@@ -124,6 +176,10 @@ class GeneticExprUI(object):
             self.tk.quit()
 
     def _draw(self):
+        self._iterate()
+        self.tk.after(self.MILLISECONDS_PER_FRAME, self.draw)
+
+    def _iterate(self, *, step: bool = False):
         if not self.solution_chromosome or not self.drawn_solution:
             self.canvas.delete(ALL)
             self.chromosome_ids = self._draw_lines(20, 50)
@@ -132,13 +188,12 @@ class GeneticExprUI(object):
                 self.paused = True
                 self.drawn_solution = True
 
-        if not self.paused and not self.solution_chromosome:
+        if (not self.paused or step) and not self.solution_chromosome:
             self.iteration += 1
             self.sim.iteration = self.iteration
             self.solution_chromosome = self.sim.step()
 
         self.tk.update()
-        self.tk.after(self.MILLISECONDS_PER_FRAME, self.draw)
 
     def stop(self):
         self.tk.quit()
@@ -154,7 +209,7 @@ class GeneticExprUI(object):
         height = canvas_height + button_frame_height + bottom_margin
 
         self.canvas.config(height=canvas_height)
-        self.tk.geometry(f'1175x{height}')
+        self.tk.geometry(f'1475x{height}')
 
     @property
     def paused(self):
@@ -163,7 +218,8 @@ class GeneticExprUI(object):
     @paused.setter
     def paused(self, is_paused: bool):
         self._paused = is_paused
-        self.pause_button.config(text='Play' if is_paused else 'Pause')
+        self.pause_button.config(text='‣' if is_paused else '⏸')
+        self.step_button.config(state=NORMAL if is_paused else DISABLED)
 
     def _draw_lines(self, x=0, y=0):
         ids = []
@@ -171,11 +227,10 @@ class GeneticExprUI(object):
             ids += self._draw_line(x, y + i*15, chromosome)
         return ids
 
-    def _draw_line(self, x, y, chromosome):
+    def _draw_line(self, x, y, chromosome: UIChromosome):
         ids = []
         orig_bbox = bbox = (x, y, x-5, y)
-        for gene_string, gene_color in zip(chromosome.genes,
-                                          chromosome.gene_colors):
+        for gene_string, gene_color in zip(chromosome.genes, chromosome.gene_colors):
             text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                               text=gene_string, anchor=NW,
                                               fill=gene_color)
@@ -184,8 +239,40 @@ class GeneticExprUI(object):
 
         if chromosome.is_solution:
             self.canvas.create_rectangle(
-                ((orig_bbox[0] - 5, y) + bbox[2:]),
+                (orig_bbox[0] - 5, y, bbox[2] + 4, bbox[3] - 2),
                 fill='', outline='white')
+
+        # Draw expression
+        value = chromosome.evaluated
+        if value:
+            value_str = f'{value: .2f}'
+        else:
+            value_str = '?'
+        value_str = f'{value_str:>10}'
+
+        font = 'monospace 10'
+        value_color = chromosome.get_value_color()
+        static_color = 'white'
+
+        text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
+                                          text='=', anchor=NW,
+                                          fill=static_color, font=font)
+        bbox = self.canvas.bbox(text_id)
+
+        text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
+                                          text=value_str, anchor=NW,
+                                          fill=value_color, font=font)
+        bbox = self.canvas.bbox(text_id)
+
+        text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
+                                          text='=', anchor=NW,
+                                          fill=static_color, font=font)
+        bbox = self.canvas.bbox(text_id)
+
+        text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
+                                          text=chromosome.decoded_str, anchor=NW,
+                                          fill=value_color, font=font)
+        bbox = self.canvas.bbox(text_id)
 
         return ids
 
@@ -212,17 +299,17 @@ class GeneticExprUI(object):
         return self.canvas.bbox(text_id)
 
     def _draw_equals_sign(self, x=0, y=0):
-        symbol = '=' if self.solution_chromosome else u'\u2260'
+        symbol = '=' if self.solution_chromosome else '≠'
         text_id = self.canvas.create_text((x, y), text=symbol,
                                           font='monospace 30', fill='white',
                                           anchor=NW)
         return self.canvas.bbox(text_id)
 
-    def _draw_top_chromosome(self, chromosome, x=0, y=0):
+    def _draw_top_chromosome(self, chromosome: UIChromosome, x=0, y=0):
         if not self.solution_chromosome:
             value = chromosome.evaluated
             if value:
-                value_str = '{value:.2f}'.format(value=value)
+                value_str = f'{value:.2f}'
             else:
                 value_str = '?'
 
@@ -237,7 +324,7 @@ class GeneticExprUI(object):
             equals_bbox = self.canvas.bbox(equals_id)
             x = equals_bbox[2]
 
-        self.canvas.create_text((x, y), text=chromosome.decoded, anchor=W,
+        self.canvas.create_text((x, y), text=chromosome.decoded_str, anchor=W,
                                 font='monospace 20', fill='cyan')
 
     def _draw_iteration(self, x=0, y=0):
@@ -267,6 +354,13 @@ class GeneticExprUI(object):
             self._restart_simulation()
         else:
             self.paused = not self.paused
+
+    def on_step_button_pressed(self, event):
+        if self.solution_chromosome:
+            self._restart_simulation()
+            self.paused = True
+        else:
+            self._iterate(step=True)
 
     def on_restart_button_pressed(self, event):
         self._restart_simulation(solution=self.sim.solution)
