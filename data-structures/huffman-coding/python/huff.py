@@ -118,32 +118,38 @@ def decode(encoded: bytes) -> str:
     while padding_mark.pop(0):
         bits = bits[:-1]
 
-    nodes = []
+    nodes = {}
+    cur = 0
     for i in range(num_syms):
         node = HuffNode()
 
         bitlen = 0
-        while bits.pop(0):
-            bitlen += 1
+        for bit in bits[cur:]:
+            bitlen += bit
+            cur += 1
+            if not bit:
+                break
 
-        node.bits = bits[:bitlen]
-        del bits[:bitlen]
+        node.bits = bits[cur:cur+bitlen]
+        cur += bitlen
 
-        node.sym = bits[:8].tobytes().decode('latin-1')  # TODO: utf-8
-        del bits[:8]
+        node.sym = bits[cur:cur+8].tobytes().decode('latin-1')  # TODO: utf-8
+        cur += 8
 
-        nodes.append(node)
+        nodes[tuple(node.bits)] = node
 
     decoded = []
-    buf = bitarray()
-    while bits:
-        buf += bits[:1]
-        bits = bits[1:]
+    buf = ()
 
-        for node in nodes:
-            if node.bits == buf:
-                decoded.append(node.sym)
-                buf = bitarray('')
-                break
+    nodes_get = nodes.get
+    decoded_append = decoded.append
+
+    for bit in bits[cur:]:
+        buf += (bit,)
+
+        node = nodes_get(buf)
+        if node:
+            decoded_append(node.sym)
+            buf = ()
 
     return ''.join(decoded)

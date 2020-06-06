@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import pytest
 
 import huff
@@ -6,7 +8,7 @@ import huff
 @pytest.mark.parametrize('source', [
     'Hello, there!',
 
-    '''
+    pytest.param('''
     Lorem Ipsum is simply dummy text of the printing and typesetting industry. 
     Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, 
     when an unknown printer took a galley of type and scrambled it to make a type specimen book. 
@@ -15,11 +17,11 @@ import huff
     Letraset sheets containing Lorem Ipsum passages, 
     and more recently with desktop publishing software 
     like Aldus PageMaker including versions of Lorem Ipsum.
-    ''',
+    ''', id='lorem-short'),
 
     'I am a pretty, pretty princess',
 
-    '''
+    pytest.param('''
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Aenean tristique condimentum metus sed ultrices. Donec tempus magna erat, at porta ligula pellentesque nec. Vestibulum varius augue a nisl cursus, et fermentum est tristique. Interdum et malesuada fames ac ante ipsum primis in faucibus. Nulla tincidunt augue quis feugiat porta. Morbi eu magna vitae nunc laoreet placerat et eget nibh. Vivamus tristique felis sit amet ligula sodales finibus. Pellentesque mattis nulla et accumsan sodales.
 
 Sed auctor mauris purus, id lacinia massa rutrum ac. Ut accumsan, ligula pretium bibendum porttitor, tortor massa tempor nisl, ac lacinia purus risus non odio. Aenean et sem et urna vestibulum ullamcorper. Cras massa dolor, sollicitudin vitae posuere eget, venenatis suscipit justo. Nulla lacinia condimentum tincidunt. Maecenas imperdiet pharetra est, et ultricies libero volutpat ac. Curabitur sodales ligula ac massa tempus gravida. Pellentesque bibendum neque sit amet congue ullamcorper. Aliquam congue ex nec orci lobortis porttitor. Duis pulvinar egestas lorem in efficitur. Integer tincidunt ultricies accumsan. Sed a faucibus arcu, sed tempor velit. Maecenas auctor vel arcu non feugiat.
@@ -29,9 +31,9 @@ Aliquam placerat ante felis, nec mollis magna tempor pellentesque. Nulla neque d
 Etiam at viverra magna. Suspendisse nec vestibulum turpis. Maecenas tempus nunc leo, nec dictum velit vestibulum quis. Aenean imperdiet nunc elit, quis blandit nulla efficitur id. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Proin aliquam ut eros non bibendum. In hac habitasse platea dictumst.
 
 Vivamus at ex sit amet est mollis vehicula sit amet et mi. Praesent sollicitudin sollicitudin ex a rhoncus. Sed varius elit sit amet turpis condimentum vestibulum. Sed at efficitur diam. Aliquam pellentesque imperdiet metus quis rutrum. Aliquam rutrum fermentum mi, in hendrerit nisl pretium id. Maecenas interdum ex ligula, nec sagittis ex porttitor non. Nam tempus nisi pulvinar sem suscipit, sed aliquet elit venenatis.
-    ''',
+    ''', id='lorem-5-para'),
 
-    '''
+    pytest.param('''
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Ut pretium efficitur libero, sit amet aliquet nunc rutrum in. Vivamus eu velit massa. Sed faucibus est velit, nec finibus nisl bibendum at. Suspendisse eu mauris sed magna posuere varius vitae a orci. Suspendisse imperdiet, risus sed aliquet malesuada, tortor velit laoreet massa, in pretium diam quam ac tellus. Fusce ac sem volutpat quam rutrum tristique. Sed metus velit, iaculis ut tellus non, pharetra facilisis ipsum. Etiam efficitur tempus orci, at eleifend erat sodales et. Vivamus tempor, dolor sit amet ultricies vehicula, ipsum tellus rhoncus mauris, sit amet fringilla nisl urna tincidunt lorem. Integer placerat bibendum nulla, eu facilisis neque tempor in.
 
 Nunc finibus dapibus tellus, at pretium felis pulvinar vel. Etiam pellentesque tortor urna, sed mollis ex pulvinar id. Duis accumsan enim ac dolor sodales, vitae condimentum ligula imperdiet. Praesent ac lectus at neque faucibus laoreet. Nulla facilisi. Integer efficitur eros felis, sed porttitor nisl pellentesque quis. Sed tristique interdum justo ac ullamcorper. Nulla blandit quam eget odio cursus rhoncus. Morbi nisi purus, sagittis eget ipsum in, porttitor semper lacus. Donec eu leo id tortor tristique tristique ut vitae nisl. Sed tristique nisi odio, at luctus elit lobortis ac. Vestibulum eget arcu accumsan, accumsan metus quis, porttitor dolor. Aliquam efficitur vehicula enim eu commodo. Aliquam erat volutpat. Fusce interdum gravida iaculis.
@@ -131,11 +133,11 @@ Aliquam vel neque ipsum. Suspendisse id tortor in arcu vestibulum sollicitudin. 
 Duis iaculis id mauris vitae imperdiet. Maecenas dapibus suscipit augue, nec scelerisque turpis tempus sit amet. In in felis efficitur, consequat velit eu, porta velit. Fusce blandit molestie hendrerit. Vestibulum interdum vestibulum ornare. Etiam bibendum ac velit vitae hendrerit. Aliquam erat volutpat. Quisque in purus blandit, consectetur ipsum quis, interdum sem. Proin varius tincidunt justo nec vestibulum. Maecenas sed lorem leo. Integer pretium massa id lorem lobortis, quis luctus enim malesuada. Nullam vel dapibus nulla. Mauris nunc risus, bibendum vitae nulla quis, hendrerit molestie est. Cras a blandit lacus. Sed varius nisl id dapibus venenatis. Proin varius, purus eu ullamcorper imperdiet, leo sem posuere tortor, nec sodales massa sapien ac elit.
 
 Pellentesque sollicitudin scelerisque velit sit amet iaculis. Sed nulla nulla, consequat vel ex sit amet, consequat lobortis dolor. Duis sed commodo orci. Aenean eget diam at neque vulputate lacinia. Duis a pharetra augue. Nullam suscipit nisi non sem ultricies condimentum. Nunc tempor tempor ligula. In pulvinar lectus ipsum, ut ornare dui iaculis eget. Aliquam a eros auctor mauris blandit congue. Cras eleifend sit amet lectus euismod vulputate.
-    '''
+    ''', id='lorem-full'),
 ])
-def test_decoding_encoded_string_equals_source(source: str):
+def test_decoding_encoded_string_equals_source(source: str, benchmark):
     encoded = huff.encode(source)
-    decoded = huff.decode(encoded)
+    decoded = benchmark(huff.decode, encoded)
 
     compression_ratio = (len(source) - len(encoded)) / len(source)
     print()
