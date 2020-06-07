@@ -50,7 +50,7 @@ def string_to_bits(s):
     return ''.join(ndigit_bin(c, 8) for c in s)
 
 
-class Chromosome(object):
+class Chromosome:
     """Represents a chromosome, i.e. a string of genes."""
 
     GENE_SIZE = 4  # Number of binary digits in a gene

@@ -1,14 +1,11 @@
-from __future__ import print_function
-
 import random
+import signal
 from bisect import bisect
+from threading import Thread
 
-try:
-    from Tkinter import *
-    from Tkinter.tkSimpleDialog import askinteger
-except ImportError:  # Python 3
-    from tkinter import *
-    from tkinter.simpledialog import askinteger
+from tkinter import *
+from tkinter.simpledialog import askinteger
+from typing import Optional
 
 from genetic_expr2 import Simulation, Chromosome
 
@@ -21,6 +18,10 @@ class UIChromosome(Chromosome):
     def __init__(self, gene_string, solution):
         self.gene_colors = []
         super(UIChromosome, self).__init__(gene_string, solution)
+
+        self.evaluated_str = '?'
+        if self.evaluated:
+            self.evaluated_str = f'{self.evaluated: .2f}'
 
         self.decoded_str = '?'
         if self.decoded:
@@ -108,7 +109,7 @@ class UISimulation(Simulation):
     chromosome_class = UIChromosome
 
 
-class GeneticExprUI(object):
+class GeneticExprUI:
     FRAMES_PER_SECOND = 60
     MILLISECONDS_PER_FRAME = int(1000 / FRAMES_PER_SECOND)
 
@@ -118,6 +119,7 @@ class GeneticExprUI(object):
 
         self.tk = Tk()
         self.tk.minsize(1175, 250)
+        self.tk.title('Genetic Expressions')
         self.tk.configure(background='black')
 
         self.button_frame = Frame(self.tk, relief=FLAT, bg='black')
@@ -197,6 +199,7 @@ class GeneticExprUI(object):
 
     def stop(self):
         self.tk.quit()
+        self.tk.update()
 
     def _resize(self):
         pop_minheight = 15 * self.sim.population_size
@@ -222,12 +225,16 @@ class GeneticExprUI(object):
         self.step_button.config(state=NORMAL if is_paused else DISABLED)
 
     def _draw_lines(self, x=0, y=0):
+        max_eval_len = max(len(chromosome.evaluated_str)
+                           for chromosome in self.sim.population)
+        max_eval_len = max(max_eval_len, 10)
+
         ids = []
         for i, chromosome in enumerate(self.sim.population):
-            ids += self._draw_line(x, y + i*15, chromosome)
+            ids += self._draw_line(x, y + i*15, chromosome, value_pad=max_eval_len)
         return ids
 
-    def _draw_line(self, x, y, chromosome: UIChromosome):
+    def _draw_line(self, x, y, chromosome: UIChromosome, *, value_pad: int = 10):
         ids = []
         orig_bbox = bbox = (x, y, x-5, y)
         for gene_string, gene_color in zip(chromosome.genes, chromosome.gene_colors):
@@ -243,12 +250,7 @@ class GeneticExprUI(object):
                 fill='', outline='white')
 
         # Draw expression
-        value = chromosome.evaluated
-        if value:
-            value_str = f'{value: .2f}'
-        else:
-            value_str = '?'
-        value_str = f'{value_str:>10}'
+        value_str = f'{chromosome.evaluated_str:>{value_pad}}'
 
         font = 'monospace 10'
         value_color = chromosome.get_value_color()
@@ -288,7 +290,7 @@ class GeneticExprUI(object):
         if self.solution_chromosome:
             top_chromosome = self.solution_chromosome
         else:
-            top_chromosome = sorted(self.sim.population, key=lambda c: c.fitness)[0]
+            top_chromosome = sorted(self.sim.population, key=lambda c: c.fitness, reverse=True)[0]
 
         self._draw_top_chromosome(top_chromosome, equals_bbox[2], middle_y)
 
@@ -389,11 +391,20 @@ class GeneticExprUI(object):
 def start_interface():
     solution = random.randint(1, 1000)
     sim = UISimulation(solution)
-    ui = GeneticExprUI(sim)
-    try:
+    ui: Optional[GeneticExprUI] = None
+
+    def start_ui():
+        nonlocal ui
+        ui = GeneticExprUI(sim)
         ui.run()
-    except KeyboardInterrupt:
-        ui.stop()
+
+    def handle_sigint(sig, frame):
+        if ui:
+            ui.stop()
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    ui_thread = Thread(target=start_ui)
+    ui_thread.start()
 
 
 if __name__ == '__main__':
