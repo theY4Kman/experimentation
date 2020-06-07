@@ -27,10 +27,23 @@ class UIChromosome(Chromosome):
         if self.decoded:
             self.decoded_str = self.decoded.replace('*', '×').replace('/', '÷')
 
+    def decode_gene(self, gene_value, *, pretty: bool = False):
+        decoded = super().decode_gene(gene_value)
+
+        if pretty:
+            if decoded == '*':
+                return '×'
+            elif decoded == '/':
+                return '÷'
+
+        return decoded
+
     def decode(self):
         expr = []
+        expr_indices = []
+
         num_length = 0
-        for gene_value in self.genes:
+        for i, gene_value in enumerate(self.genes):
             value = self.decode_gene(gene_value)
             if value is None:
                 self.gene_colors.append(self.COLOR_UNKNOWN)
@@ -50,17 +63,21 @@ class UIChromosome(Chromosome):
 
             if (
                 (is_operator and expr and not was_operator)
-                or (is_digit and not (value == '0' and not was_digit) and num_length <= 2)
+                or (is_digit and not (value == '0' and not was_digit) and num_length <= 3)
             ):
                 expr.append(value)
+                expr_indices.append(i)
                 self.gene_colors.append(self.COLOR_VALID)
                 continue
 
             self.gene_colors.append(self.COLOR_INVALID)
 
         # Catches the case of an operator at the end of the chromosome (useless)
-        while expr and expr[-1] in self.GENE_VALUE_OPERATORS:
+        i = len(expr) - 1
+        while i > 0 and expr[i] in self.GENE_VALUE_OPERATORS:
             expr.pop()
+            self.gene_colors[expr_indices[i]] = self.COLOR_INVALID
+            i -= 1
 
         return ''.join(expr)
 
@@ -129,10 +146,15 @@ class GeneticExprUI:
         self.pause_button.pack(side=LEFT)
         self.tk.bind('<space>', self.on_pause_button_pressed)
 
-        self.step_button = Button(self.button_frame, text='⏽︎⏵︎')
+        self.step_button = Button(self.button_frame, text='⏽⏵︎')
         self.step_button.bind('<Button-1>', self.on_step_button_pressed)
         self.step_button.pack(side=LEFT)
-        self.tk.bind('<space>', self.on_step_button_pressed)
+        self.tk.bind('<Right>', self.on_step_button_pressed)
+
+        self.toggle_decoded_button = Button(self.button_frame, text='Show decoded︎')
+        self.toggle_decoded_button.bind('<Button-1>', self.on_toggle_decoded_button_pressed)
+        self.toggle_decoded_button.pack(side=LEFT)
+        self.tk.bind('d', self.on_toggle_decoded_button_pressed)
 
         self.new_button = Button(self.button_frame, text='New Simulation')
         self.new_button.bind('<Button-1>', self.on_new_simulation_button_pressed)
@@ -162,6 +184,7 @@ class GeneticExprUI:
         self.drawn_solution = False
         self._paused = False
         self.paused = False
+        self._show_decoded = False
 
         self.tk.update()
         self._resize()
@@ -183,9 +206,7 @@ class GeneticExprUI:
 
     def _iterate(self, *, step: bool = False):
         if not self.solution_chromosome or not self.drawn_solution:
-            self.canvas.delete(ALL)
-            self.chromosome_ids = self._draw_lines(20, 50)
-            self._draw_top_status(10, 5)
+            self._redraw()
             if self.solution_chromosome:
                 self.paused = True
                 self.drawn_solution = True
@@ -196,6 +217,11 @@ class GeneticExprUI:
             self.solution_chromosome = self.sim.step()
 
         self.tk.update()
+
+    def _redraw(self):
+        self.canvas.delete(ALL)
+        self.chromosome_ids = self._draw_lines(20, 50)
+        self._draw_top_status(10, 5)
 
     def stop(self):
         self.tk.quit()
@@ -221,8 +247,17 @@ class GeneticExprUI:
     @paused.setter
     def paused(self, is_paused: bool):
         self._paused = is_paused
-        self.pause_button.config(text='‣' if is_paused else '⏸')
+        self.pause_button.config(text='⏵' if is_paused else '⏸')
         self.step_button.config(state=NORMAL if is_paused else DISABLED)
+
+    @property
+    def show_decoded(self):
+        return self._show_decoded
+
+    @show_decoded.setter
+    def show_decoded(self, show_decoded: bool):
+        self._show_decoded = show_decoded
+        self.toggle_decoded_button.config(text='Show genes' if show_decoded else 'Show decoded')
 
     def _draw_lines(self, x=0, y=0):
         max_eval_len = max(len(chromosome.evaluated_str)
@@ -238,9 +273,15 @@ class GeneticExprUI:
         ids = []
         orig_bbox = bbox = (x, y, x-5, y)
         for gene_string, gene_color in zip(chromosome.genes, chromosome.gene_colors):
+            if self._show_decoded:
+                text = chromosome.decode_gene(gene_string, pretty=True) or '?'
+                text *= 4
+            else:
+                text = gene_string
+
             text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
-                                              text=gene_string, anchor=NW,
-                                              fill=gene_color)
+                                              text=text, anchor=NW,
+                                              fill=gene_color, font='monospace 9')
             bbox = self.canvas.bbox(text_id)
             ids.append(text_id)
 
@@ -363,6 +404,10 @@ class GeneticExprUI:
             self.paused = True
         else:
             self._iterate(step=True)
+
+    def on_toggle_decoded_button_pressed(self, event):
+        self.show_decoded = not self.show_decoded
+        self._redraw()
 
     def on_restart_button_pressed(self, event):
         self._restart_simulation(solution=self.sim.solution)

@@ -2,18 +2,11 @@
 # Uses a genetic algorithm to find an arithmetic expression which evaluates to
 # a certain solution.
 
-from __future__ import print_function
-
 import argparse
 import math
 import os
 import random
 from typing import Optional, Union
-
-try:
-    xrange
-except NameError:  # Python 3
-    xrange = range
 
 
 # Levels of verbosity
@@ -47,7 +40,7 @@ def string_to_bits(s):
     """Return a bitstring representing each char in s"""
     if isinstance(s, str):
         s = [ord(c) for c in s]
-    return ''.join(ndigit_bin(c, 8) for c in s)
+    return ''.join(f'{c:08b}' for c in s)
 
 
 class Chromosome:
@@ -57,8 +50,10 @@ class Chromosome:
     GENE_VALUE_DIGITS = '0123456789'
     GENE_VALUE_OPERATORS = '+-*/'
     GENE_VALUES = GENE_VALUE_DIGITS + GENE_VALUE_OPERATORS
-    GENE_VALUE_BITS = dict((ndigit_bin(i, 4), value)
-                           for i, value in enumerate(GENE_VALUES))
+    GENE_VALUE_BITS = {
+        f'{i:04b}': value
+        for i, value in enumerate(GENE_VALUES)
+    }
 
     def __init__(self, gene_string, solution):
         self.solution = solution
@@ -167,7 +162,7 @@ class Chromosome:
         return new_x, new_y
 
 
-class Simulation(object):
+class Simulation:
     chromosome_class = Chromosome
 
     def __init__(self, solution, population_size=30, chromosome_size=30,
@@ -189,14 +184,14 @@ class Simulation(object):
     def _generate_random_population(self):
         return [self.chromosome_class.random(self.solution,
                                              self.chromosome_size)
-                for _ in xrange(self.population_size)]
+                for _ in range(self.population_size)]
 
     def step(self):
+        self._iterate_population()
+
         solution_chromosome = self.check_for_solution()
         if solution_chromosome:
             return solution_chromosome
-
-        self._iterate_population()
 
     def _iterate_population(self):
         self.population = self._generate_population_iteration()
@@ -228,7 +223,7 @@ class Simulation(object):
         """
         chromosomes = self.population
 
-        for i in xrange(n):
+        for i in range(n):
             chromosomes = set(sorted(chromosomes, key=lambda c: c.fitness, reverse=i % 2 == 1))
 
             total_fitness = sum(abs(chromosome.fitness) for chromosome in chromosomes)
@@ -278,7 +273,7 @@ class Simulation(object):
                 return chromosome
 
     def _run(self, max_iterations):
-        for iteration in xrange(max_iterations):
+        for iteration in range(max_iterations):
             self.iteration = iteration
 
             self._print('{:#^30}'.format(' ITERATION %d ' % iteration), VERB_INFO)
