@@ -1,13 +1,59 @@
 import random
 import signal
 from bisect import bisect
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from threading import Thread
 
 from tkinter import *
+from tkinter import font
 from tkinter.simpledialog import askinteger
-from typing import Optional
+from typing import List, Optional
 
 from genetic_expr2 import Simulation, Chromosome
+
+
+MAX_DIGITS = 3
+ALLOW_STANDALONE_ZEROES = True
+
+
+class Type(Enum):
+    UNKNOWN = -1
+    NUMBER = auto()
+    OPERATOR = auto()
+
+    @classmethod
+    def of_char(cls, c: Optional[str]) -> Optional['Type']:
+        if c is None:
+            return Type.UNKNOWN
+        elif c.isnumeric():
+            return Type.NUMBER
+        elif c in '+-*/':
+            return Type.OPERATOR
+        else:
+            return Type.UNKNOWN
+
+
+class Char(str):
+    index: int
+    type: Type = None
+
+    def __new__(cls, s, index: int) -> 'Char':
+        instance = super().__new__(cls, s)
+        instance.index = index
+        return instance
+
+
+@dataclass
+class Token:
+    type: Type
+    chars: List[Char] = field(default_factory=list)
+
+    def __add__(self, c: Char):
+        c.type = self.type
+        self.chars.append(c)
+        return self
 
 
 class UIChromosome(Chromosome):
@@ -15,7 +61,46 @@ class UIChromosome(Chromosome):
     COLOR_INVALID = 'yellow'
     COLOR_UNKNOWN = 'red'
 
-    def __init__(self, gene_string, solution):
+    GENE_SIZE = 5  # Number of binary digits in a gene
+
+    GENES = {
+        '00000': None,
+        '01111': None,
+
+        '00001': '+',
+        '01000': '-',
+
+        '00101': '*',
+        '01010': '/',
+
+        '00010': '1',
+        '00100': '9',
+
+        '00011': '3',
+        '00110': '5',
+        '01100': '7',
+
+        '01001': '0',
+
+        '01011': '2',
+        '01101': '4',
+
+        '00111': '6',
+        '01110': '8',
+    }
+
+    GENE_VALUE_BITS = {
+        bits: value
+        for bits, value in sorted(GENES.items())
+        if value is not None
+    }
+
+    def __init__(self, gene_string, solution, *,
+                 decode_max_digits: int = MAX_DIGITS,
+                 decode_allow_standalone_zeroes: bool = ALLOW_STANDALONE_ZEROES):
+        self.decode_max_digits = decode_max_digits
+        self.decode_allow_standalone_zeroes = decode_allow_standalone_zeroes
+
         self.gene_colors = []
         super(UIChromosome, self).__init__(gene_string, solution)
 
@@ -39,47 +124,65 @@ class UIChromosome(Chromosome):
         return decoded
 
     def decode(self):
-        expr = []
-        expr_indices = []
-
-        num_length = 0
-        for i, gene_value in enumerate(self.genes):
-            value = self.decode_gene(gene_value)
-            if value is None:
-                self.gene_colors.append(self.COLOR_UNKNOWN)
+        unknown = []
+        tokens = []
+        gene_exprs = [self.decode_gene(gene) for gene in self.genes]
+        for i, expr in enumerate(gene_exprs):
+            c = Char(expr, i)
+            toktype = Type.of_char(c)
+            if toktype == Type.UNKNOWN:
+                unknown.append(c)
                 continue
 
-            is_digit = value in self.GENE_VALUE_DIGITS
-            is_operator = value in self.GENE_VALUE_OPERATORS
+            if not tokens or toktype == Type.OPERATOR or toktype != tokens[-1].type:
+                tokens.append(Token(type=toktype))
+            tokens[-1] += c
 
-            was_operator = expr and expr[-1] in self.GENE_VALUE_OPERATORS
-            was_digit = expr and expr[-1] in self.GENE_VALUE_DIGITS
-
-            if is_operator:
-                num_length = 0
-
-            if is_digit:
-                num_length += 1
-
-            if (
-                (is_operator and expr and not was_operator)
-                or (is_digit and not (value == '0' and not was_digit) and num_length <= 3)
-            ):
-                expr.append(value)
-                expr_indices.append(i)
-                self.gene_colors.append(self.COLOR_VALID)
+        invalid = []
+        valid = []
+        while tokens:
+            tok = tokens.pop(0)
+            if not tok.chars:
                 continue
 
-            self.gene_colors.append(self.COLOR_INVALID)
+            peek = tokens and tokens[0]
+            past = valid and valid[-1]
 
-        # Catches the case of an operator at the end of the chromosome (useless)
-        i = len(expr) - 1
-        while i > 0 and expr[i] in self.GENE_VALUE_OPERATORS:
-            expr.pop()
-            self.gene_colors[expr_indices[i]] = self.COLOR_INVALID
-            i -= 1
+            if tok.type == Type.NUMBER:
+                # Remove leading zeroes
+                while len(tok.chars) > 1 and tok.chars[0] == '0':
+                    invalid.append(tok.chars.pop(0))
 
-        return ''.join(expr)
+                # Truncate to max digits
+                while len(tok.chars) > self.decode_max_digits:
+                    invalid.append(tok.chars.pop())
+
+                valid += tok.chars
+
+            elif tok.type == Type.OPERATOR:
+                op = tok.chars[0]
+
+                if (
+                    # Allow unary + or - (allow them whenever followed by a number)
+                    (op in '+-' and (peek and peek.type == Type.NUMBER))
+
+                    # Allow other ops if preceded and followed by a number
+                    or (past and past.type == Type.NUMBER and peek and peek.type == Type.NUMBER)
+                ):
+                    valid.append(op)
+                else:
+                    invalid.append(op)
+
+        color_indices = [
+            (c.index, color)
+            for color, chars in [(self.COLOR_UNKNOWN, unknown),
+                                 (self.COLOR_INVALID, invalid),
+                                 (self.COLOR_VALID, valid)]
+            for c in chars
+        ]
+        self.gene_colors = [color for index, color in sorted(color_indices)]
+
+        return ''.join(valid)
 
     def get_value_color(self) -> str:
         red         = (1.0, 0.0, 0.0)
@@ -139,6 +242,10 @@ class GeneticExprUI:
         self.tk.title('Genetic Expressions')
         self.tk.configure(background='black')
 
+        self.font_chromosome = font.Font(family='monospace', size=9)
+        self.font_chromosome_evaluated = font.Font(family='monospace', size=10)
+
+
         self.button_frame = Frame(self.tk, relief=FLAT, bg='black')
 
         self.pause_button = Button(self.button_frame, text='Pause')
@@ -186,6 +293,8 @@ class GeneticExprUI:
         self.paused = False
         self._show_decoded = False
 
+        self._value_pads = deque((10,), maxlen=25)
+
         self.tk.update()
         self._resize()
 
@@ -216,6 +325,11 @@ class GeneticExprUI:
             self.sim.iteration = self.iteration
             self.solution_chromosome = self.sim.step()
 
+            max_eval_len = max(len(chromosome.evaluated_str)
+                               for chromosome in self.sim.population)
+            max_eval_len = max(max_eval_len, 10)
+            self._value_pads.append(max_eval_len)
+
         self.tk.update()
 
     def _redraw(self):
@@ -237,8 +351,18 @@ class GeneticExprUI:
         bottom_margin = 20
         height = canvas_height + button_frame_height + bottom_margin
 
+        gene_width = self.font_chromosome.measure('0') * self.sim.chromosome_class.GENE_SIZE
+        gene_space_width = self.font_chromosome.measure(' ')
+        num_genes = self.sim.chromosome_size
+        chromosome_width = gene_width * num_genes + gene_space_width * (num_genes - 1)
+
+        evaluated_width = 300  # heuristic
+        side_margin = 20
+
+        width = chromosome_width + evaluated_width + 2 * side_margin
+
         self.canvas.config(height=canvas_height)
-        self.tk.geometry(f'1475x{height}')
+        self.tk.geometry(f'{width}x{height}')
 
     @property
     def paused(self):
@@ -260,13 +384,11 @@ class GeneticExprUI:
         self.toggle_decoded_button.config(text='Show genes' if show_decoded else 'Show decoded')
 
     def _draw_lines(self, x=0, y=0):
-        max_eval_len = max(len(chromosome.evaluated_str)
-                           for chromosome in self.sim.population)
-        max_eval_len = max(max_eval_len, 10)
+        value_pad = max(self._value_pads)
 
         ids = []
         for i, chromosome in enumerate(self.sim.population):
-            ids += self._draw_line(x, y + i*15, chromosome, value_pad=max_eval_len)
+            ids += self._draw_line(x, y + i*15, chromosome, value_pad=value_pad)
         return ids
 
     def _draw_line(self, x, y, chromosome: UIChromosome, *, value_pad: int = 10):
@@ -275,13 +397,13 @@ class GeneticExprUI:
         for gene_string, gene_color in zip(chromosome.genes, chromosome.gene_colors):
             if self._show_decoded:
                 text = chromosome.decode_gene(gene_string, pretty=True) or '?'
-                text *= 4
+                text = (text * chromosome.GENE_SIZE)[:chromosome.GENE_SIZE]
             else:
                 text = gene_string
 
             text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                               text=text, anchor=NW,
-                                              fill=gene_color, font='monospace 9')
+                                              fill=gene_color, font=self.font_chromosome)
             bbox = self.canvas.bbox(text_id)
             ids.append(text_id)
 
@@ -293,28 +415,27 @@ class GeneticExprUI:
         # Draw expression
         value_str = f'{chromosome.evaluated_str:>{value_pad}}'
 
-        font = 'monospace 10'
         value_color = chromosome.get_value_color()
         static_color = 'white'
 
         text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                           text='=', anchor=NW,
-                                          fill=static_color, font=font)
+                                          fill=static_color, font=self.font_chromosome_evaluated)
         bbox = self.canvas.bbox(text_id)
 
         text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                           text=value_str, anchor=NW,
-                                          fill=value_color, font=font)
+                                          fill=value_color, font=self.font_chromosome_evaluated)
         bbox = self.canvas.bbox(text_id)
 
         text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                           text='=', anchor=NW,
-                                          fill=static_color, font=font)
+                                          fill=static_color, font=self.font_chromosome_evaluated)
         bbox = self.canvas.bbox(text_id)
 
         text_id = self.canvas.create_text((bbox[2] + 5, bbox[1]),
                                           text=chromosome.decoded_str, anchor=NW,
-                                          fill=value_color, font=font)
+                                          fill=value_color, font=self.font_chromosome_evaluated)
         bbox = self.canvas.bbox(text_id)
 
         return ids
@@ -381,7 +502,7 @@ class GeneticExprUI:
 
     def _restart_simulation(self, solution=None):
         if solution is None:
-            solution = random.randint(10, 1000)
+            solution = random.randint(10, 100000)
 
         self.sim = UISimulation(solution, population_size=self.population_size)
         self.iteration = 0

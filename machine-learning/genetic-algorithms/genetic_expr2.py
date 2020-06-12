@@ -47,18 +47,53 @@ class Chromosome:
     """Represents a chromosome, i.e. a string of genes."""
 
     GENE_SIZE = 4  # Number of binary digits in a gene
-    GENE_VALUE_DIGITS = '0123456789'
-    GENE_VALUE_OPERATORS = '+-*/'
-    GENE_VALUES = GENE_VALUE_DIGITS + GENE_VALUE_OPERATORS
-    GENE_VALUE_BITS = {
-        f'{i:04b}': value
-        for i, value in enumerate(GENE_VALUES)
+
+    GENES = {
+        '0000': None,
+        '1111': None,
+
+        '0001': '+',
+        '1000': '-',
+
+        '0101': '*',
+        '1010': '/',
+
+        '0010': '1',
+        '0100': '9',
+
+        '0011': '3',
+        '0110': '5',
+        '1100': '7',
+
+        '1001': '0',
+
+        '1011': '2',
+        '1101': '4',
+
+        '0111': '6',
+        '1110': '8',
     }
+
+    GENE_VALUE_DIGITS = tuple('0123456789')
+    GENE_VALUE_OPERATORS = tuple('+-*/')
+    GENE_VALUES = tuple('+-0123456789*/')
+    GENE_VALUE_BITS = {
+        bits: value
+        for bits, value in sorted(GENES.items())
+        if value is not None
+    }
+
+    # Without a maximum possible non-solution score, 1 / (goal - eval) would be 1 / 1
+    # if `eval` was only 1 away from `goal`.
+    IMPERFECT_MAX_SCORE = 0.96
+
+    # Score multiplier when solution is non-integer (i.e. has a decimal part)
+    NON_INTEGER_MULTIPLIER = 0.2
 
     def __init__(self, gene_string, solution):
         self.solution = solution
         self.gene_string = gene_string
-        self.genes = split_n_chars(self.gene_string, 4)
+        self.genes = split_n_chars(self.gene_string, self.GENE_SIZE)
         self.decoded = self.decode()
         self.evaluated = self.evaluate(self.decoded)
         self.is_solution = self.evaluated == solution
@@ -108,17 +143,13 @@ class Chromosome:
             return 0.0
 
         is_integer = self.evaluated.is_integer() if isinstance(self.evaluated, float) else True
-        int_bias = 1 if is_integer else 0.5
+        int_bias = 1 if is_integer else self.NON_INTEGER_MULTIPLIER
 
         if is_integer and self.solution == self.evaluated:
             return 1.0
 
-        # Without a maximum possible non-solution score, 1 / (goal - eval) would be 1 / 1
-        # if `eval` was only 1 away from `goal`.
-        max_score = 0.96
-
         try:
-            return max_score * 1.0 / int(abs(self.solution - self.evaluated)) * int_bias
+            return self.IMPERFECT_MAX_SCORE * 1.0 / int(abs(self.solution - self.evaluated)) * int_bias
         except ZeroDivisionError:
             return 0.0
 
@@ -141,6 +172,10 @@ class Chromosome:
 
         mutated_gene_string = ''.join(mutated_bits)
         return self.__class__(mutated_gene_string, self.solution)
+
+    def __lshift__(self, n: int):
+        shifted_gene_string = self.gene_string[n:] + self.gene_string[:n]
+        return self.__class__(shifted_gene_string, self.solution)
 
     @classmethod
     def random(cls, solution, num_genes):
@@ -197,12 +232,7 @@ class Simulation:
         self.population = self._generate_population_iteration()
 
     def _generate_population_iteration(self):
-        new_population = []
-        new_population_size = 0
-        while new_population_size < self.population_size:
-            new_population += self._new_children()
-            new_population_size += 2  # _new_children always returns 2
-        return new_population[:self.population_size]
+        return self._new_children()
 
     def _roulette_wheel(self):
         """Returns a random chromosome (random with respect to fitness)"""
@@ -247,25 +277,39 @@ class Simulation:
         return sum(abs(chromosome.fitness) for chromosome in self.population)
 
     def _new_children(self):
-        a, b = self._select_chromosomes(2)
+        population = []
 
-        generation_multiplier = 2 - math.log(self.iteration % 100 + 1, 100)
-        generation_multiplier_alt = 2 - math.log(101 - self.iteration % 100, 100)
+        while len(population) < self.population_size:
+            a, b = self._select_chromosomes(2)
 
-        # See if we should crossover
-        if random.random() <= self.crossover_rate:
-            a, b = self.chromosome_class.crossover(a, b)
+            generation_multiplier = 2 - math.log(self.iteration % 100 + 1, 100)
+            generation_multiplier_alt = 2 - math.log(101 - self.iteration % 100, 100)
+            shift_multiplier = generation_multiplier
 
-        # time_multiplier = (1 + math.log(self.iteration))
-        mutation_rate = self.base_mutation_rate * generation_multiplier - random.random() * self.base_mutation_rate * generation_multiplier
+            # See if we should crossover
+            if random.random() <= self.crossover_rate:
+                a, b = self.chromosome_class.crossover(a, b)
 
-        a_mutation_rate = mutation_rate * (1 - abs(a.fitness) + random.random() * generation_multiplier)
-        b_mutation_rate = mutation_rate * (1 - abs(b.fitness) + random.random() * generation_multiplier)
+            # time_multiplier = (1 + math.log(self.iteration))
+            mutation_rate = self.base_mutation_rate * generation_multiplier - random.random() * self.base_mutation_rate * generation_multiplier
 
-        a = a.mutate(a_mutation_rate)
-        b = b.mutate(b_mutation_rate)
+            a_mutation_rate = mutation_rate * (1 - abs(a.fitness) + random.random() * generation_multiplier)
+            b_mutation_rate = mutation_rate * (1 - abs(b.fitness) + random.random() * generation_multiplier)
 
-        return a, b
+            a = a.mutate(a_mutation_rate)
+            b = b.mutate(b_mutation_rate)
+
+            if random.random() < a_mutation_rate:
+                a_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier / a_mutation_rate)
+                a <<= a_shift
+            if random.random() < b_mutation_rate:
+                b_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier / b_mutation_rate)
+                b <<= b_shift
+
+            population.append(a)
+            population.append(b)
+
+        return population
 
     def check_for_solution(self):
         for chromosome in self.population:
