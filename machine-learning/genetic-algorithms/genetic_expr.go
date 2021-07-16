@@ -77,7 +77,7 @@ func main() {
 	rand.Seed(time.Now().Unix())
 
 	params := DefaultSimulationParams()
-	sim := NewSimulation(rand.Intn(99999), params)
+	sim := NewSimulation(rand.Intn(9999999), params)
 
 	fmt.Printf("Solving for: %d\n\n", sim.solution)
 
@@ -198,9 +198,9 @@ func (sim *Simulation) calculateFitness(evaluated float64, err error) float64 {
 
 	var intBias float64
 	if isInteger {
-		intBias = sim.params.NonIntegerScoreMultiplier
-	} else {
 		intBias = 1
+	} else {
+		intBias = sim.params.NonIntegerScoreMultiplier
 	}
 
 	denominator := math.Trunc(math.Abs(float64(sim.solution) - evaluated))
