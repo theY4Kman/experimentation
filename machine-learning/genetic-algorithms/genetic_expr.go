@@ -4,17 +4,19 @@ import (
 	"context"
 	"fmt"
 	"github.com/PaesslerAG/gval"
+	"github.com/hashicorp/golang-lru"
 	"math"
 	"math/rand"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 var GeneBits = 5
 var GeneMask = byte(255 >> (8 - GeneBits))
 
-var GeneValues = map[byte]rune{
+var GeneValues = map[byte]byte{
 	0b0001: '+',
 	0b1000: '-',
 
@@ -37,16 +39,27 @@ var GeneValues = map[byte]rune{
 	0b1110: '8',
 }
 
-var ValueGenes map[rune]byte
+var ValueGenes map[byte]byte
 var UnknownGenes []byte
 
-var GeneOperators = "+-*/"
-var GeneDigits = "01234567890"
+var GeneOperators = []byte("+-*/")
+var GeneDigits = []byte("01234567890")
 
-var ExprLang gval.Language
+var GeneOperatorsSet map[byte]struct{}
+var GeneDigitsSet map[byte]struct{}
+
+var exprLang gval.Language
+
+var randPool = sync.Pool{
+	New: func() interface{} {
+		return rand.New(rand.NewSource(rand.Int63()))
+	},
+}
+
+var expressionResultCache *lru.Cache
 
 func init() {
-	ValueGenes = make(map[rune]byte)
+	ValueGenes = make(map[byte]byte)
 	for gene, value := range GeneValues {
 		ValueGenes[value] = gene
 	}
@@ -59,8 +72,19 @@ func init() {
 		}
 	}
 
+	GeneOperatorsSet = make(map[byte]struct{})
+	for _, op := range GeneOperators {
+		GeneOperatorsSet[op] = struct{}{}
+	}
+
+	GeneDigitsSet = make(map[byte]struct{})
+	for _, digit := range GeneDigits {
+		GeneDigitsSet[digit] = struct{}{}
+	}
+
+
 	// Create an arithmetic expressions Language which supports a "+" unary prefix operator
-	ExprLang = gval.NewLanguage(
+	exprLang = gval.NewLanguage(
 		gval.Arithmetic(),
 		gval.PrefixOperator("+", func(c context.Context, parameter interface{}) (interface{}, error) {
 			p, isFloat := parameter.(float64)
@@ -71,14 +95,185 @@ func init() {
 			return +p, nil
 		}),
 	)
+
+	var err error
+	expressionResultCache, err = lru.New(256)
+	if err != nil {
+		// TODO: handle more gracefully?
+		panic(err)
+	}
 }
 
 func main() {
 	rand.Seed(time.Now().Unix())
 
 	params := DefaultSimulationParams()
-	sim := NewSimulation(rand.Intn(9999999), params)
+	sim := NewSimulation(params)
+	sim.Init(rand.Intn(9999999))
+	sim.Run()
+}
 
+func isIntegral(val float64) bool {
+	return val == float64(int(val))
+}
+
+type SimulationParams struct {
+	// Number of genes each Chromosome will have
+	ChromosomeSize int
+
+	// Max number of digits a term may have before the rest are marked invalid, and truncated
+	TermMaxDigits int
+
+	// Maximum possible score a non-exact solution can have.
+	// Due to how fitness is evaluated — essentially, 1 / abs(result - solution) — if
+	// a result is only 1 away from the solution, its fitness would be 1 / 1 = 1, which
+	// is a perfect score. To combat this, we cap the maximum score a non-exact solution can have.
+	ImperfectMaxScore         float64
+
+	// Multiplier applied to fitness scores of possible solutions which are not
+	// whole integers. This serves to discourage answers with decimal parts, which
+	// tend to be further from the solution than their relative distance on the
+	// number line is.
+	NonIntegerScoreMultiplier float64
+
+	// Number of Chromosomes to include in the Simulation.
+	// Must be a multiple of 2.
+	PopulationSize   int
+
+	// Rate at which two Chromosomes will cross over (swap their low/high bits at a fulcrum)
+	// during population iteration.
+	CrossoverRate    float64
+
+	// This rate affects how likely mutations (bit flips) occur within Chromosomes,
+	// as well as the likelihood each Chromosome will rotate its bits a random amount.
+	BaseMutationRate float64
+
+	// Number of workers to utilize when evaluating each Chromosome's expressions
+	// each iteration. Set to 0 to run without goroutines.
+	NumEvaluationWorkers int
+
+	// Number of workers to utilize when creating new generations of the Population.
+	// Set to 0 to run without goroutines.
+	NumGenerationWorkers int
+}
+
+type simulationContext struct {
+	SimulationParams
+
+	// Enables reuse of
+	decodeBufPool sync.Pool
+}
+
+func DefaultSimulationParams() *SimulationParams {
+	return &SimulationParams{
+		ChromosomeSize: 40,
+
+		TermMaxDigits: 3,
+
+		ImperfectMaxScore:         0.96,
+		NonIntegerScoreMultiplier: 0.2,
+
+		PopulationSize:   50,
+		CrossoverRate:    0.8,
+		BaseMutationRate: 0.02,
+
+		//XXX///////////////////////////////////////////////////////////////////////////////////////////
+		//NumEvaluationWorkers: 0,
+		NumEvaluationWorkers: 4,
+
+		//XXX///////////////////////////////////////////////////////////////////////////////////////////
+		//NumGenerationWorkers: 0,
+		NumGenerationWorkers: 2,
+	}
+}
+
+type Simulation struct {
+	ctx      *simulationContext
+	solution int
+
+	iteration  uint
+	population Population
+
+	solutions []*Chromosome
+}
+
+type Population []*PopulationMember
+
+func (pop Population) Len() int           { return len(pop) }
+func (pop Population) Swap(i, j int)      { pop[i], pop[j] = pop[j], pop[i] }
+func (pop Population) Less(i, j int) bool { return pop[i] != nil && pop[i].fitness < pop[j].fitness }
+
+type PopulationMember struct {
+	c       *Chromosome
+	fitness float64
+}
+
+func NewSimulation(params *SimulationParams) *Simulation {
+	sim := &Simulation{
+		ctx: &simulationContext{
+			SimulationParams: *params,
+			decodeBufPool: sync.Pool{
+				New: func() interface{} {
+					return make([]byte, params.ChromosomeSize)
+				},
+			},
+		},
+		iteration:  1,
+	}
+
+	return sim
+}
+
+// Init creates the initial Population and sets the target solution
+func (sim *Simulation) Init(solution int) {
+	sim.solution = solution
+	sim.population = make([]*PopulationMember, sim.ctx.PopulationSize)
+
+	for i := range sim.population {
+		sim.population[i] = sim.randomMember()
+	}
+}
+
+func (sim *Simulation) randomMember() *PopulationMember {
+	chromosome := sim.RandomChromosome()
+	return &PopulationMember{
+		c:       chromosome,
+		fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
+	}
+}
+
+func (sim *Simulation) calculateFitness(evaluated float64, err error) float64 {
+	if err != nil {
+		return 0
+	}
+
+	isInteger := isIntegral(evaluated)
+	if isInteger && sim.solution == int(evaluated) {
+		return 1
+	}
+
+	var intBias float64
+	if isInteger {
+		intBias = 1
+	} else {
+		intBias = sim.ctx.NonIntegerScoreMultiplier
+	}
+
+	denominator := math.Trunc(math.Abs(float64(sim.solution) - evaluated))
+	if denominator == 0 {
+		// Avoid division by zero
+		return 0
+	}
+
+	return sim.ctx.ImperfectMaxScore * 1 / denominator * intBias
+}
+
+func (sim *Simulation) Solutions() []*Chromosome {
+	return sim.solutions
+}
+
+// Run the Simulation until a solution is found, printing status to the console periodically
+func (sim *Simulation) Run() {
 	fmt.Printf("Solving for: %d\n\n", sim.solution)
 
 	for ;; {
@@ -106,116 +301,6 @@ func main() {
 	}
 }
 
-func isIntegral(val float64) bool {
-	return val == float64(int(val))
-}
-
-type SimulationParams struct {
-	// Chromosome config
-	ChromosomeSize int
-
-	// Chromosome decoding params
-	TermMaxDigits int
-
-	// Evaluated expression scoring params
-	ImperfectMaxScore         float64
-	NonIntegerScoreMultiplier float64
-
-	// Population config
-	PopulationSize   int
-	CrossoverRate    float64
-	BaseMutationRate float64
-}
-
-func DefaultSimulationParams() *SimulationParams {
-	return &SimulationParams{
-		ChromosomeSize: 40,
-
-		TermMaxDigits: 3,
-
-		ImperfectMaxScore:         0.96,
-		NonIntegerScoreMultiplier: 0.2,
-
-		PopulationSize:   50,
-		CrossoverRate:    0.8,
-		BaseMutationRate: 0.01,
-	}
-}
-
-type Simulation struct {
-	params   *SimulationParams
-	solution int
-
-	iteration  uint
-	population Population
-
-	solutions []*Chromosome
-}
-
-type Population []*SimChromosome
-
-func (pop Population) Len() int           { return len(pop) }
-func (pop Population) Swap(i, j int)      { pop[i], pop[j] = pop[j], pop[i] }
-func (pop Population) Less(i, j int) bool { return pop[i] != nil && pop[i].fitness < pop[j].fitness }
-
-type SimChromosome struct {
-	c       *Chromosome
-	fitness float64
-}
-
-func NewSimulation(solution int, params *SimulationParams) *Simulation {
-	sim := &Simulation{
-		params:     params,
-		solution:   solution,
-		iteration:  1,
-		population: make([]*SimChromosome, params.PopulationSize),
-	}
-
-	for i := range sim.population {
-		sim.population[i] = sim.randomChromosome()
-	}
-
-	return sim
-}
-
-func (sim *Simulation) randomChromosome() *SimChromosome {
-	chromosome := RandomChromosome(sim.params)
-	return &SimChromosome{
-		c:       chromosome,
-		fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
-	}
-}
-
-func (sim *Simulation) calculateFitness(evaluated float64, err error) float64 {
-	if err != nil {
-		return 0
-	}
-
-	isInteger := isIntegral(evaluated)
-	if isInteger && sim.solution == int(evaluated) {
-		return 1
-	}
-
-	var intBias float64
-	if isInteger {
-		intBias = 1
-	} else {
-		intBias = sim.params.NonIntegerScoreMultiplier
-	}
-
-	denominator := math.Trunc(math.Abs(float64(sim.solution) - evaluated))
-	if denominator == 0 {
-		// Avoid division by zero
-		return 0
-	}
-
-	return sim.params.ImperfectMaxScore * 1 / denominator * intBias
-}
-
-func (sim *Simulation) Solutions() []*Chromosome {
-	return sim.solutions
-}
-
 // Step iterates the population, and returns whether a solution has been found
 func (sim *Simulation) Step() bool {
 	sim.iteratePopulation()
@@ -230,11 +315,35 @@ func (sim *Simulation) Step() bool {
 
 func (sim *Simulation) iteratePopulation() {
 	generation := sim.nextGeneration()
-	for i, chromosome := range generation {
-		sim.population[i] = &SimChromosome{
-			c:       chromosome,
-			fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
+
+	evaluateChromosomes := func(chromosomes []*Chromosome, startIndex int) {
+		for i, chromosome := range chromosomes {
+			sim.population[startIndex + i] = &PopulationMember{
+				c:       chromosome,
+				fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
+			}
 		}
+	}
+
+	if sim.ctx.NumEvaluationWorkers == 0 {
+		evaluateChromosomes(generation, 0)
+	} else {
+		wg := sync.WaitGroup{}
+
+		chunkSize := len(generation) / sim.ctx.NumEvaluationWorkers
+		for i := 0; i < len(generation); i += chunkSize {
+			start, end := i, i + chunkSize
+			if end >= len(generation) {
+				end = len(generation) - 1
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				evaluateChromosomes(generation[start:end], start)
+			}()
+		}
+		wg.Wait()
 	}
 
 	sim.iteration++
@@ -243,23 +352,27 @@ func (sim *Simulation) iteratePopulation() {
 // nextGeneration creates a new population from the current one, based on mutation and crossover rates,
 // as well as periodic mutation rate increases based on iteration
 func (sim *Simulation) nextGeneration() []*Chromosome {
-	generation := make([]*Chromosome, sim.params.PopulationSize)
+	generation := make([]*Chromosome, sim.ctx.PopulationSize)
+	sortedChromosomes := sim.getSortedChromosomes()
 
-	for i := 0; i < sim.params.PopulationSize; i += 2 {
-		aSim, bSim := sim.selectChromosomePair()
+	generateChromosomePair := func(i int, rng *rand.Rand) {
+		chromosomes := make(Population, len(sortedChromosomes))
+		copy(chromosomes, sortedChromosomes)
+
+		aSim, bSim := sim.selectChromosomePairFromSortedSlice(chromosomes)
 		a, b := aSim.c, bSim.c
 
 		generationMultiplier := 2 - math.Log(float64(sim.iteration%100)) / math.Log(100)
 		shiftMultiplier := generationMultiplier
 
-		mutationRate := sim.params.BaseMutationRate * generationMultiplier - rand.Float64() * sim.params.BaseMutationRate * generationMultiplier
+		mutationRate := sim.ctx.BaseMutationRate * generationMultiplier - rng.Float64() * sim.ctx.BaseMutationRate * generationMultiplier
 
-		aMutationRate := mutationRate * (1 - math.Abs(aSim.fitness) + rand.Float64() * sim.params.BaseMutationRate * generationMultiplier)
-		bMutationRate := mutationRate * (1 - math.Abs(bSim.fitness) + rand.Float64() * sim.params.BaseMutationRate * generationMultiplier)
+		aMutationRate := mutationRate * (1 - math.Abs(aSim.fitness) + rng.Float64() * sim.ctx.BaseMutationRate * generationMultiplier)
+		bMutationRate := mutationRate * (1 - math.Abs(bSim.fitness) + rng.Float64() * sim.ctx.BaseMutationRate * generationMultiplier)
 
-		if rand.Float64() < sim.params.CrossoverRate {
+		if rng.Float64() < sim.ctx.CrossoverRate {
 			var err error
-			a, b, err = Crossover(a, b)
+			a, b, err = CrossOver(a, b)
 
 			if err != nil {
 				// TODO: handle gracefully
@@ -267,14 +380,14 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 			}
 		}
 
-		a = a.Mutate(aMutationRate)
-		b = b.Mutate(bMutationRate)
+		a = a.MutateWithRand(aMutationRate, rng)
+		b = b.MutateWithRand(bMutationRate, rng)
 
-		if rand.Float64() < aMutationRate {
+		if rng.Float64() < aMutationRate {
 			aShift := int(shiftMultiplier * float64(GeneBits))
 			a = a.LRotate(aShift)
 		}
-		if rand.Float64() < bMutationRate {
+		if rng.Float64() < bMutationRate {
 			bShift := int(shiftMultiplier * float64(GeneBits))
 			b = a.LRotate(bShift)
 		}
@@ -283,14 +396,61 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 		generation[i+1] = b
 	}
 
+	if sim.ctx.NumGenerationWorkers == 0 {
+		rng := randPool.Get().(*rand.Rand)
+		defer randPool.Put(rng)
+
+		for i := 0; i < sim.ctx.PopulationSize; i += 2 {
+			generateChromosomePair(i, rng)
+		}
+	} else {
+		queue := make(chan int)
+		wg := sync.WaitGroup{}
+
+		for i := 0; i < 1; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				rng := randPool.Get().(*rand.Rand)
+				defer randPool.Put(rng)
+
+				for i := range queue {
+					generateChromosomePair(i, rng)
+				}
+			}()
+		}
+
+		for i := 0; i < sim.ctx.PopulationSize; i += 2 {
+			queue <- i
+		}
+		close(queue)
+
+		wg.Wait()
+	}
+
 	return generation
 }
 
-func (sim *Simulation) selectChromosomes(n int) []*SimChromosome {
-	selection := make([]*SimChromosome, n)
-
+func (sim *Simulation) getSortedChromosomes() Population {
 	chromosomes := make(Population, len(sim.population))
 	copy(chromosomes, sim.population)
+	sort.Sort(chromosomes)
+	return chromosomes
+}
+
+func (sim *Simulation) selectChromosomes(n int) []*PopulationMember {
+	return sim.selectChromosomesFromSortedSlice(n, sim.getSortedChromosomes())
+}
+
+func (sim *Simulation) selectChromosomesFromSortedSlice(n int, chromosomes Population) []*PopulationMember {
+	rng := randPool.Get().(*rand.Rand)
+	defer randPool.Put(rng)
+	return sim.selectChromosomesFromSortedSliceAndRand(n, chromosomes, rng)
+}
+
+func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosomes Population, rng *rand.Rand) []*PopulationMember {
+	selection := make([]*PopulationMember, n)
 
 	chooseChromosome := func(selectionIndex int, chromosomeIndex int) {
 		selection[selectionIndex] = chromosomes[chromosomeIndex]
@@ -307,7 +467,7 @@ nextSelection:
 			totalFitness += chromosome.fitness
 		}
 
-		pick := rand.Float64() * totalFitness
+		pick := rng.Float64() * totalFitness
 		current := 0.0
 		for k, chromosome := range chromosomes {
 			current += math.Abs(chromosome.fitness)
@@ -319,42 +479,52 @@ nextSelection:
 
 		// If no selection could be made (which can happen if all fitness values are 0.0),
 		// revert to random choice
-		chooseChromosome(i, rand.Intn(len(chromosomes)))
+		chooseChromosome(i, rng.Intn(len(chromosomes)))
 	}
 
 	return selection
 }
 
-func (sim *Simulation) selectChromosomePair() (*SimChromosome, *SimChromosome) {
-	selection := sim.selectChromosomes(2)
+func (sim *Simulation) selectChromosomePair() (*PopulationMember, *PopulationMember) {
+	return sim.selectChromosomePairFromSortedSlice(sim.getSortedChromosomes())
+}
+
+func (sim *Simulation) selectChromosomePairFromSortedSlice(chromosomes Population) (*PopulationMember, *PopulationMember) {
+	rng := randPool.Get().(*rand.Rand)
+	defer randPool.Put(rng)
+	return sim.selectChromosomePairFromSortedSliceAndRand(chromosomes, rng)
+}
+
+func (sim *Simulation) selectChromosomePairFromSortedSliceAndRand(chromosomes Population, rng *rand.Rand) (*PopulationMember, *PopulationMember) {
+	selection := sim.selectChromosomesFromSortedSliceAndRand(2, chromosomes, rng)
 	return selection[0], selection[1]
 }
 
 type Chromosome struct {
 	genes   []byte
-	params  *SimulationParams
+	ctx  *simulationContext
 	decoded *DecodeResult
 }
 
-func NewChromosome(params *SimulationParams) *Chromosome {
+func (sim *Simulation) NewChromosome() *Chromosome {
 	return &Chromosome{
-		genes:  make([]byte, params.ChromosomeSize),
-		params: params,
+		genes:  make([]byte, sim.ctx.ChromosomeSize),
+		ctx: sim.ctx,
 	}
 }
 
-func EncodeExpression(expression string, params *SimulationParams) (*Chromosome, error) {
-	return EncodeChromosome(expression, params, false)
+func (sim *Simulation) EncodeExpression(expression string) (*Chromosome, error) {
+	return sim.EncodeChromosome(expression, false)
 }
 
-func EncodeChromosome(expression string, params *SimulationParams, useRandomUnknownGene bool) (*Chromosome, error) {
-	if len(expression) > params.ChromosomeSize {
-		return nil, fmt.Errorf("expression \"%s\" is longer than params.ChromosomeSize (%d)", expression, params.ChromosomeSize)
+func (sim *Simulation) EncodeChromosome(expression string, useRandomUnknownGene bool) (*Chromosome, error) {
+	if len(expression) > sim.ctx.ChromosomeSize {
+		return nil, fmt.Errorf("expression \"%s\" is longer than ChromosomeSize (%d)", expression, sim.ctx.ChromosomeSize)
 	}
 
-	chromosome := NewChromosome(params)
+	chromosome := sim.NewChromosome()
 	for i, value := range expression {
-		if gene, isValid := ValueGenes[value]; isValid {
+		if gene, isValid := ValueGenes[byte(value)]; isValid {
 			chromosome.genes[i] = gene
 		} else if useRandomUnknownGene {
 			chromosome.genes[i] = UnknownGenes[rand.Intn(len(UnknownGenes))]
@@ -365,8 +535,8 @@ func EncodeChromosome(expression string, params *SimulationParams, useRandomUnkn
 	return chromosome, nil
 }
 
-func RandomChromosome(params *SimulationParams) *Chromosome {
-	chromosome := NewChromosome(params)
+func (sim *Simulation) RandomChromosome() *Chromosome {
+	chromosome := sim.NewChromosome()
 	rand.Read(chromosome.genes)
 	for i := range chromosome.genes {
 		chromosome.genes[i] &= GeneMask
@@ -374,7 +544,7 @@ func RandomChromosome(params *SimulationParams) *Chromosome {
 	return chromosome
 }
 
-func ChromosomeFromGeneString(geneString string, params *SimulationParams) (*Chromosome, error) {
+func (sim *Simulation) ChromosomeFromGeneString(geneString string) (*Chromosome, error) {
 	geneString = strings.ReplaceAll(geneString, " ", "")
 	numGenes := int(math.Ceil(float64(len(geneString)) / float64(GeneBits)))
 
@@ -396,7 +566,7 @@ func ChromosomeFromGeneString(geneString string, params *SimulationParams) (*Chr
 
 	return &Chromosome{
 		genes:  genes,
-		params: params,
+		ctx: sim.ctx,
 	}, nil
 }
 
@@ -446,9 +616,9 @@ func CrossoverFulcrum(a, b *Chromosome, fulcrum int) (*Chromosome, *Chromosome, 
 	return newA, newB, nil
 }
 
-// Crossover creates two new Chromosomes from the provided two,
+// CrossOver creates two new Chromosomes from the provided two,
 // with the higher and lower bits swapped at a random number of bits
-func Crossover(a, b *Chromosome) (*Chromosome, *Chromosome, error) {
+func CrossOver(a, b *Chromosome) (*Chromosome, *Chromosome, error) {
 	fulcrum := rand.Intn(len(a.genes))
 	return CrossoverFulcrum(a, b, fulcrum)
 }
@@ -518,7 +688,7 @@ func (c *Chromosome) VerboseString() string {
 func (c *Chromosome) Copy() *Chromosome {
 	copied := &Chromosome{
 		genes: make([]byte, len(c.genes)),
-		params: c.params,
+		ctx: c.ctx,
 		decoded: nil,
 	}
 	copy(copied.genes, c.genes)
@@ -531,11 +701,16 @@ func (c *Chromosome) Genes() []byte {
 
 // Mutate creates a new Chromosome with bits randomly flipped based on mutationRate
 func (c *Chromosome) Mutate(mutationRate float64) *Chromosome {
+	rng := randPool.Get().(*rand.Rand)
+	defer randPool.Put(rng)
+	return c.MutateWithRand(mutationRate, rng)
+}
+func (c *Chromosome) MutateWithRand(mutationRate float64, rng *rand.Rand) *Chromosome {
 	mutated := c.Copy()
 
 	for i, gene := range mutated.genes {
 		for j := GeneBits - 1; j >= 0; j-- {
-			if rand.Float64() < mutationRate {
+			if rng.Float64() < mutationRate {
 				mask := byte(1) << j
 				bit := gene & mask
 				if bit > 0 {
@@ -573,7 +748,7 @@ func (c *Chromosome) LRotate(n int) *Chromosome {
 
 	return &Chromosome{
 		genes:  shiftedGenes,
-		params: c.params,
+		ctx: c.ctx,
 	}
 }
 
@@ -592,19 +767,41 @@ type DecodeResult struct {
 	evalErr   error
 }
 
+// LRU-cached results of evaluation
+type cachedEvaluation struct {
+	evaluated *float64
+	evalErr   error
+}
+
 func (d *DecodeResult) Evaluate() (float64, error) {
+returnDecodeResultCache:
 	if d.evaluated != nil {
 		return *d.evaluated, d.evalErr
+	} else if d.evalErr != nil {
+		return 0, d.evalErr
 	}
 
-	result, err := gval.Evaluate(d.Expression, nil, ExprLang)
-	if err != nil {
-		return 0, err
+	if cached, isCached := expressionResultCache.Get(d.Expression); isCached {
+		cachedRes := cached.(*cachedEvaluation)
+		d.evaluated = cachedRes.evaluated
+		d.evalErr = cachedRes.evalErr
+		goto returnDecodeResultCache
 	}
 
-	evaluated := result.(float64)
-	d.evaluated = &evaluated
+	result, err := exprLang.Evaluate(d.Expression, nil)
 	d.evalErr = err
+
+	if err == nil {
+		evaluated := result.(float64)
+		d.evaluated = &evaluated
+	} else {
+		d.evaluated = nil
+	}
+
+	expressionResultCache.Add(d.Expression, &cachedEvaluation{
+		evaluated: d.evaluated,
+		evalErr:   d.evalErr,
+	})
 
 	return *d.evaluated, d.evalErr
 }
@@ -626,16 +823,16 @@ const (
 )
 
 type decodeToken struct {
-	Type  decodeTokenType
-	Chars strings.Builder
-	Str   string
-	Indices []int
+	Type     decodeTokenType
+	Chars    []byte
+	CharsLen int
+	Indices  []int
 }
 
-func tokenTypeOfRune(rune rune) decodeTokenType {
-	if strings.ContainsRune(GeneOperators, rune) {
+func tokenTypeOfByte(c byte) decodeTokenType {
+	if _, isOperator := GeneOperatorsSet[c]; isOperator {
 		return tokenTypeOperator
-	} else if strings.ContainsRune(GeneDigits, rune) {
+	} else if _, isDigit := GeneDigitsSet[c]; isDigit {
 		return tokenTypeNumber
 	} else {
 		return tokenTypeUnknown
@@ -647,41 +844,58 @@ func (c *Chromosome) Decode() *DecodeResult {
 		return c.decoded
 	}
 
-	var rawExprBuf, exprBuf strings.Builder
-	validityBuf := make([]byte, 0, len(c.genes))
+	validityBuf := c.ctx.decodeBufPool.Get().([]byte)
+	defer c.ctx.decodeBufPool.Put(validityBuf)
 
-	rawExprBuf.Grow(len(c.genes))
-	exprBuf.Grow(len(c.genes))
+	rawExprLen := 0
+	rawExprBuf := c.ctx.decodeBufPool.Get().([]byte)
+	defer c.ctx.decodeBufPool.Put(rawExprBuf)
+
+	exprLen := 0
+	exprBuf := c.ctx.decodeBufPool.Get().([]byte)
+	defer c.ctx.decodeBufPool.Put(exprBuf)
+
+	writeByte := func(buf []byte, bufLen *int, c byte) {
+		buf[*bufLen] = c
+		*bufLen++
+	}
+	writeBytes := func(buf []byte, bufLen *int, bytes []byte) {
+		copy(buf[*bufLen:], bytes)
+		*bufLen += len(bytes)
+	}
 
 	var tokens []decodeToken
 
 	for i, gene := range c.Genes() {
 		if value, isKnown := GeneValues[gene]; isKnown {
-			rawExprBuf.WriteRune(value)
+			writeByte(rawExprBuf, &rawExprLen, value)
 
-			toktype := tokenTypeOfRune(value)
+			toktype := tokenTypeOfByte(value)
 			if len(tokens) == 0 || toktype == tokenTypeOperator || toktype != tokens[len(tokens)-1].Type {
-				indicesCap := 6  // arbitrarily padded cap for number tokens
+				indicesCap := len(c.genes) / 4  // arbitrarily padded cap for number tokens
 				if toktype == tokenTypeOperator {
 					indicesCap = 1
 				}
 
+				tokenCharsBuf := c.ctx.decodeBufPool.Get().([]byte)
 				tokens = append(tokens, decodeToken{
-					Type:  toktype,
-					Chars: strings.Builder{},
-					Indices: make([]int, 0, indicesCap),
+					Type:     toktype,
+					Chars:    tokenCharsBuf,
+					CharsLen: 0,
+					Indices:  make([]int, 0, indicesCap),
 				})
+				//goland:noinspection GoDeferInLoop
+				defer c.ctx.decodeBufPool.Put(tokenCharsBuf)
 			}
 
 			token := &tokens[len(tokens)-1]
-			token.Chars.WriteByte(byte(value))
-			token.Str = token.Chars.String()
+			writeByte(token.Chars, &token.CharsLen, value)
 			token.Indices = append(token.Indices, i)
 
 			// NOTE: this validity may be reversed during parsing
-			validityBuf = append(validityBuf, byte(Valid))
+			validityBuf[i] = byte(Valid)
 		} else {
-			validityBuf = append(validityBuf, byte(Unknown))
+			validityBuf[i] = byte(Unknown)
 		}
 	}
 
@@ -689,7 +903,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 
 	for i := range tokens {
 		tok := &tokens[i]
-		if len(tok.Str) == 0 {
+		if tok.CharsLen == 0 {
 			continue
 		}
 
@@ -706,25 +920,27 @@ func (c *Chromosome) Decode() *DecodeResult {
 		switch tok.Type {
 		case tokenTypeNumber:
 			// Remove leading zeroes
-			for len(tok.Str) > 1 && tok.Str[0] == '0' {
+			for tok.CharsLen > 1 && tok.Chars[0] == '0' {
 				validityBuf[tok.Indices[0]] = byte(Invalid)
-				tok.Str = tok.Str[1:]
+				tok.Chars = tok.Chars[1:]
+				tok.CharsLen--
 				tok.Indices = tok.Indices[1:]
 			}
 
 			// Truncate to max digits
-			if len(tok.Str) > c.params.TermMaxDigits {
-				for k := c.params.TermMaxDigits; k < len(tok.Str); k++ {
+			if tok.CharsLen > c.ctx.TermMaxDigits {
+				for k := c.ctx.TermMaxDigits; k < tok.CharsLen; k++ {
 					validityBuf[tok.Indices[k]] = byte(Invalid)
 				}
-				tok.Str = tok.Str[:c.params.TermMaxDigits]
+				tok.CharsLen = c.ctx.TermMaxDigits
+				tok.Chars = tok.Chars[:tok.CharsLen]
 			}
 
-			exprBuf.WriteString(tok.Str)
+			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.CharsLen])
 			validTokens = append(validTokens, tok)
 
 		case tokenTypeOperator:
-			op := tok.Str[0]
+			op := tok.Chars[0]
 
 			// Allow unary + or -, whenever followed by a number
 			isValidUnary := (op == '+' || op == '-') && (peek != nil && peek.Type == tokenTypeNumber)
@@ -733,7 +949,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 			isValidBinary := past != nil && past.Type == tokenTypeNumber && peek != nil && peek.Type == tokenTypeNumber
 
 			if isValidUnary || isValidBinary {
-				exprBuf.WriteByte(op)
+				writeByte(exprBuf, &exprLen, op)
 				validTokens = append(validTokens, tok)
 			} else {
 				validityBuf[tok.Indices[0]] = byte(Invalid)
@@ -742,8 +958,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 	}
 
 	c.decoded = &DecodeResult{
-		RawExpression: rawExprBuf.String(),
-		Expression:    exprBuf.String(),
+		RawExpression: string(rawExprBuf[:rawExprLen]),
+		Expression:    string(exprBuf[:exprLen]),
 		Validity:      string(validityBuf),
 	}
 	return c.decoded

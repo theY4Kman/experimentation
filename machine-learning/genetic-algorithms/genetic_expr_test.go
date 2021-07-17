@@ -5,6 +5,7 @@ import (
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	"math/rand"
 	"testing"
 )
 
@@ -12,8 +13,8 @@ func init() {
 	RegisterFailHandler(Fail)
 }
 
-func TestChromosome(t *testing.T) {
-	RunSpecs(t, "Chromosome")
+func Test(t *testing.T) {
+	RunSpecs(t, "Genetic Expressions")
 }
 
 var _ = Describe("Chromosome", func() {
@@ -21,8 +22,9 @@ var _ = Describe("Chromosome", func() {
 		func(geneExpr string, expectedValidity string, expectedDecodedExpr string) {
 			params := DefaultSimulationParams()
 			params.ChromosomeSize = len(geneExpr)
+			sim := NewSimulation(params)
 
-			chromosome, err := EncodeChromosome(geneExpr, params, true)
+			chromosome, err := sim.EncodeChromosome(geneExpr, true)
 			Expect(err).ToNot(HaveOccurred())
 
 			decoded := chromosome.Decode()
@@ -54,7 +56,9 @@ var _ = Describe("Chromosome", func() {
 
 	DescribeTable("Decode (raw)",
 		func(geneString string, expectedValidity string, expectedDecodedExpr string) {
-			chromosome, err := ChromosomeFromGeneString(geneString, DefaultSimulationParams())
+			sim := NewSimulation(DefaultSimulationParams())
+
+			chromosome, err := sim.ChromosomeFromGeneString(geneString)
 			Expect(err).ToNot(HaveOccurred())
 
 			decoded := chromosome.Decode()
@@ -71,7 +75,9 @@ var _ = Describe("Chromosome", func() {
 
 	DescribeTable("Evaluate",
 		func(geneExpr string, expectedResult float64) {
-			chromosome, err := EncodeChromosome(geneExpr, DefaultSimulationParams(), true)
+			sim := NewSimulation(DefaultSimulationParams())
+
+			chromosome, err := sim.EncodeChromosome(geneExpr, true)
 			Expect(err).ToNot(HaveOccurred())
 
 			decoded := chromosome.Decode()
@@ -93,7 +99,9 @@ var _ = Describe("Chromosome", func() {
 
 	DescribeTable("LRotate",
 		func(geneString string, nBits int, expectedGeneString string) {
-			chromosome, err := ChromosomeFromGeneString(geneString, DefaultSimulationParams())
+			sim := NewSimulation(DefaultSimulationParams())
+
+			chromosome, err := sim.ChromosomeFromGeneString(geneString)
 			Expect(err).ToNot(HaveOccurred())
 
 			shiftedChromosome := chromosome.LRotate(nBits)
@@ -108,12 +116,12 @@ var _ = Describe("Chromosome", func() {
 
 	DescribeTable("CrossoverFulcrum",
 		func(aGeneString, bGeneString string, fulcrum int, expectedAGeneString, expectedBGeneString string) {
-			params := DefaultSimulationParams()
+			sim := NewSimulation(DefaultSimulationParams())
 
-			a, err := ChromosomeFromGeneString(aGeneString, params)
+			a, err := sim.ChromosomeFromGeneString(aGeneString)
 			Expect(err).ToNot(HaveOccurred())
 
-			b, err := ChromosomeFromGeneString(bGeneString, params)
+			b, err := sim.ChromosomeFromGeneString(bGeneString)
 			Expect(err).ToNot(HaveOccurred())
 
 			newA, newB, err := CrossoverFulcrum(a, b, fulcrum)
@@ -129,3 +137,25 @@ var _ = Describe("Chromosome", func() {
 			"11111 11100", "00000 00011"),
 	)
 })
+
+var _ = Describe("Simulation", func() {
+	DescribeTable("Run",
+		func(solution int) {
+			rand.Seed(0)  // use static seed for an inkling of repeatability
+
+			sim := NewSimulation(DefaultSimulationParams())
+			sim.Init(solution)
+			sim.Run()
+		},
+
+		FEntry("987654321", 987654321),
+	)
+})
+
+func TestSimulation_Run(t *testing.T) {
+	rand.Seed(0)  // use static seed for an inkling of repeatability
+
+	sim := NewSimulation(DefaultSimulationParams())
+	sim.Init(987654321)
+	sim.Run()
+}
