@@ -823,10 +823,10 @@ const (
 )
 
 type decodeToken struct {
-	Type     decodeTokenType
-	Chars    []byte
-	CharsLen int
-	Indices  []int
+	Type  decodeTokenType
+	Chars strings.Builder
+	Str   string
+	Indices []int
 }
 
 func tokenTypeOfByte(c byte) decodeTokenType {
@@ -859,9 +859,9 @@ func (c *Chromosome) Decode() *DecodeResult {
 		buf[*bufLen] = c
 		*bufLen++
 	}
-	writeBytes := func(buf []byte, bufLen *int, bytes []byte) {
-		copy(buf[*bufLen:], bytes)
-		*bufLen += len(bytes)
+	writeString := func(buf []byte, bufLen *int, str string) {
+		copy(buf[*bufLen:], str)
+		*bufLen += len(str)
 	}
 
 	var tokens []decodeToken
@@ -877,19 +877,16 @@ func (c *Chromosome) Decode() *DecodeResult {
 					indicesCap = 1
 				}
 
-				tokenCharsBuf := c.ctx.decodeBufPool.Get().([]byte)
 				tokens = append(tokens, decodeToken{
-					Type:     toktype,
-					Chars:    tokenCharsBuf,
-					CharsLen: 0,
-					Indices:  make([]int, 0, indicesCap),
+					Type:  toktype,
+					Chars: strings.Builder{},
+					Indices: make([]int, 0, indicesCap),
 				})
-				//goland:noinspection GoDeferInLoop
-				defer c.ctx.decodeBufPool.Put(tokenCharsBuf)
 			}
 
 			token := &tokens[len(tokens)-1]
-			writeByte(token.Chars, &token.CharsLen, value)
+			token.Chars.WriteByte(value)
+			token.Str = token.Chars.String()
 			token.Indices = append(token.Indices, i)
 
 			// NOTE: this validity may be reversed during parsing
@@ -903,7 +900,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 
 	for i := range tokens {
 		tok := &tokens[i]
-		if tok.CharsLen == 0 {
+		if len(tok.Str) == 0 {
 			continue
 		}
 
@@ -920,27 +917,25 @@ func (c *Chromosome) Decode() *DecodeResult {
 		switch tok.Type {
 		case tokenTypeNumber:
 			// Remove leading zeroes
-			for tok.CharsLen > 1 && tok.Chars[0] == '0' {
+			for len(tok.Str) > 1 && tok.Str[0] == '0' {
 				validityBuf[tok.Indices[0]] = byte(Invalid)
-				tok.Chars = tok.Chars[1:]
-				tok.CharsLen--
+				tok.Str = tok.Str[1:]
 				tok.Indices = tok.Indices[1:]
 			}
 
 			// Truncate to max digits
-			if tok.CharsLen > c.ctx.TermMaxDigits {
-				for k := c.ctx.TermMaxDigits; k < tok.CharsLen; k++ {
+			if len(tok.Str) > c.ctx.TermMaxDigits {
+				for k := c.ctx.TermMaxDigits; k < len(tok.Str); k++ {
 					validityBuf[tok.Indices[k]] = byte(Invalid)
 				}
-				tok.CharsLen = c.ctx.TermMaxDigits
-				tok.Chars = tok.Chars[:tok.CharsLen]
+				tok.Str = tok.Str[:c.ctx.TermMaxDigits]
 			}
 
-			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.CharsLen])
+			writeString(exprBuf, &exprLen, tok.Str)
 			validTokens = append(validTokens, tok)
 
 		case tokenTypeOperator:
-			op := tok.Chars[0]
+			op := tok.Str[0]
 
 			// Allow unary + or -, whenever followed by a number
 			isValidUnary := (op == '+' || op == '-') && (peek != nil && peek.Type == tokenTypeNumber)
