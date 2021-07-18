@@ -868,7 +868,9 @@ func (c *Chromosome) Decode() *DecodeResult {
 		*bufLen += len(bytes)
 	}
 
-	var tokens []decodeToken
+	// A guess at how many tokens there will be
+	estimatedNumTokens := c.ctx.ChromosomeSize / 3
+	tokens := make([]decodeToken, 0, estimatedNumTokens)
 
 	for i, gene := range c.Genes() {
 		if value, isKnown := GeneValues[gene]; isKnown {
