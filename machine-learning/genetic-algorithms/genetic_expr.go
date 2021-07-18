@@ -160,8 +160,16 @@ type SimulationParams struct {
 type simulationContext struct {
 	SimulationParams
 
-	// Enables reuse of
+	// Enables reuse of buffers used within Chromosome.Decode
 	decodeBufPool sync.Pool
+
+	// Enables reuse of stacks used for expression evaluation within Chromosome.Decode
+	stackPool sync.Pool
+}
+
+type decodeStacks struct {
+	ops *staticByteStack
+	values *staticFloatStack
 }
 
 func DefaultSimulationParams() *SimulationParams {
@@ -215,6 +223,14 @@ func NewSimulation(params *SimulationParams) *Simulation {
 			decodeBufPool: sync.Pool{
 				New: func() interface{} {
 					return make([]byte, params.ChromosomeSize)
+				},
+			},
+			stackPool: sync.Pool{
+				New: func() interface{} {
+					return &decodeStacks{
+						ops:    newStaticByteStack(params.ChromosomeSize),
+						values: newStaticFloatStack(params.ChromosomeSize),
+					}
 				},
 			},
 		},
@@ -905,8 +921,15 @@ func (c *Chromosome) Decode() *DecodeResult {
 		}
 	}
 
-	ops := newStaticByteStack(c.ctx.ChromosomeSize)
-	values := newStaticFloatStack(c.ctx.ChromosomeSize)
+	stack := c.ctx.stackPool.Get().(*decodeStacks)
+	defer func() {
+		stack.ops.Reset()
+		stack.values.Reset()
+		c.ctx.stackPool.Put(stack)
+	}()
+
+	ops := stack.ops
+	values := stack.values
 
 	evalOp := func() {
 		lhs, _ := values.Pop()
@@ -995,6 +1018,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 			err := values.Push(float64(num))
 			if err != nil {
 				// TODO: curry error (though, stack errors should never happen)
+				fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
 				panic(err)
 			}
 
@@ -1026,6 +1050,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 				err := ops.Push(op)
 				if err != nil {
 					// TODO: curry error (though, stack errors should never happen)
+					fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
 					panic(err)
 				}
 			} else {
@@ -1037,17 +1062,19 @@ func (c *Chromosome) Decode() *DecodeResult {
 	for ; ops.Size() > 0; {
 		evalOp()
 	}
-	result, err := values.Pop()
-	if err != nil {
-		// TODO: curry error (though, stack errors should never happen)
-		panic(err)
+
+	var evaluated *float64 = nil
+	result, evalErr := values.Pop()
+	if evalErr == nil {
+		evaluated = &result
 	}
 
 	c.decoded = &DecodeResult{
 		RawExpression: string(rawExprBuf[:rawExprLen]),
 		Expression:    string(exprBuf[:exprLen]),
 		Validity:      string(validityBuf),
-		evaluated:     &result,
+		evaluated:     evaluated,
+		evalErr:       evalErr,
 	}
 	return c.decoded
 }
@@ -1085,6 +1112,10 @@ func (s *staticFloatStack) Pop() (float64, error) {
 
 func (s *staticFloatStack) Size() int {
 	return s.length
+}
+
+func (s *staticFloatStack) Reset() {
+	s.length = 0
 }
 
 type staticByteStack struct {
@@ -1128,6 +1159,10 @@ func (s *staticByteStack) Peek() (byte, error) {
 
 func (s *staticByteStack) Size() int {
 	return s.length
+}
+
+func (s *staticByteStack) Reset() {
+	s.length = 0
 }
 
 func precedenceOf(op byte) byte {
