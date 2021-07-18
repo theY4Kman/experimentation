@@ -905,6 +905,29 @@ func (c *Chromosome) Decode() *DecodeResult {
 		}
 	}
 
+	ops := newStaticByteStack(c.ctx.ChromosomeSize)
+	values := newStaticFloatStack(c.ctx.ChromosomeSize)
+
+	evalOp := func() {
+		lhs, _ := values.Pop()
+		rhs, _ := values.Pop()
+		op, _ := ops.Pop()
+
+		var result float64
+		switch op {
+		case '+':
+			result = lhs + rhs
+		case '-':
+			result = lhs - rhs
+		case '*':
+			result = lhs * rhs
+		case '/':
+			result = lhs / rhs
+		}
+
+		values.Push(result)
+	}
+
 	validTokens := make([]*decodeToken, 0, len(tokens))
 
 	for i := range tokens {
@@ -951,8 +974,29 @@ func (c *Chromosome) Decode() *DecodeResult {
 				tok.Indices = tok.Indices[:tok.Len]
 			}
 
+			// Determine value of token
+			num := 0
+			for k := 0; k < tok.Len; k ++ {
+				d := tok.Chars[k]
+				num = num * 10 + int(d - '0')
+			}
+
+			// Allow prefix - or + for first number
+			if values.Size() == 0 && ops.Size() == 1 {
+				op, _ := ops.Pop()
+				if op == '-' {
+					num *= -1
+				}
+			}
+
 			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.Len])
 			validTokens = append(validTokens, tok)
+
+			err := values.Push(float64(num))
+			if err != nil {
+				// TODO: curry error (though, stack errors should never happen)
+				panic(err)
+			}
 
 		case tokenTypeOperator:
 			op := tok.Chars[0]
@@ -966,16 +1010,130 @@ func (c *Chromosome) Decode() *DecodeResult {
 			if isValidUnary || isValidBinary {
 				writeByte(exprBuf, &exprLen, op)
 				validTokens = append(validTokens, tok)
+
+				if ops.Size() > 0 {
+					precedence := precedenceOf(op)
+					for ; ops.Size() > 0; {
+						topOp, err := ops.Peek()
+						if err != nil || precedenceOf(topOp) < precedence {
+							break
+						}
+
+						evalOp()
+					}
+				}
+
+				err := ops.Push(op)
+				if err != nil {
+					// TODO: curry error (though, stack errors should never happen)
+					panic(err)
+				}
 			} else {
 				validityBuf[tok.Indices[0]] = byte(Invalid)
 			}
 		}
 	}
 
+	for ; ops.Size() > 0; {
+		evalOp()
+	}
+	result, err := values.Pop()
+	if err != nil {
+		// TODO: curry error (though, stack errors should never happen)
+		panic(err)
+	}
+
 	c.decoded = &DecodeResult{
 		RawExpression: string(rawExprBuf[:rawExprLen]),
 		Expression:    string(exprBuf[:exprLen]),
 		Validity:      string(validityBuf),
+		evaluated:     &result,
 	}
 	return c.decoded
+}
+
+type staticFloatStack struct {
+	stack []float64
+	length int
+}
+
+func newStaticFloatStack(length int) *staticFloatStack {
+	return &staticFloatStack{
+		stack:  make([]float64, length),
+		length: 0,
+	}
+}
+
+func (s *staticFloatStack) Push(v float64) error {
+	if s.length >= len(s.stack) {
+		return fmt.Errorf("stack has reached maximum capacity (%d)", len(s.stack))
+	}
+
+	s.stack[s.length] = v
+	s.length++
+	return nil
+}
+
+func (s *staticFloatStack) Pop() (float64, error) {
+	if s.length == 0 {
+		return 0, fmt.Errorf("stack is empty")
+	}
+
+	s.length--
+	return s.stack[s.length], nil
+}
+
+func (s *staticFloatStack) Size() int {
+	return s.length
+}
+
+type staticByteStack struct {
+	stack []byte
+	length int
+}
+
+func newStaticByteStack(length int) *staticByteStack {
+	return &staticByteStack{
+		stack:  make([]byte, length),
+		length: 0,
+	}
+}
+
+func (s *staticByteStack) Push(b byte) error {
+	if s.length + 1 >= len(s.stack) {
+		return fmt.Errorf("stack has reached maximum capacity (%d)", len(s.stack))
+	}
+
+	s.stack[s.length] = b
+	s.length++
+	return nil
+}
+
+func (s *staticByteStack) Pop() (byte, error) {
+	if s.length == 0 {
+		return 0, fmt.Errorf("stack is empty")
+	}
+
+	s.length--
+	return s.stack[s.length], nil
+}
+
+func (s *staticByteStack) Peek() (byte, error) {
+	if s.length == 0 {
+		return 0, fmt.Errorf("stack is empty")
+	}
+
+	return s.stack[s.length-1], nil
+}
+
+func (s *staticByteStack) Size() int {
+	return s.length
+}
+
+func precedenceOf(op byte) byte {
+	if op == '+' || op == '-' {
+		return 0
+	} else {
+		return 1
+	}
 }
