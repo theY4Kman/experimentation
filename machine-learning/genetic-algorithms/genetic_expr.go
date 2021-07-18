@@ -823,10 +823,11 @@ const (
 )
 
 type decodeToken struct {
-	Type     decodeTokenType
-	Chars    []byte
-	CharsLen int
-	Indices  []int
+	Type       decodeTokenType
+	Chars      []byte
+	CharsLen   int
+	Indices    []int
+	IndicesLen int
 }
 
 func tokenTypeOfByte(c byte) decodeTokenType {
@@ -868,6 +869,9 @@ func (c *Chromosome) Decode() *DecodeResult {
 		*bufLen += len(bytes)
 	}
 
+	indicesLen := 0
+	indicesBuf := make([]int, c.ctx.ChromosomeSize)
+
 	// A guess at how many tokens there will be
 	estimatedNumTokens := c.ctx.ChromosomeSize / 3
 	tokens := make([]decodeToken, 0, estimatedNumTokens)
@@ -878,24 +882,24 @@ func (c *Chromosome) Decode() *DecodeResult {
 
 			toktype := tokenTypeOfByte(value)
 			if len(tokens) == 0 || toktype == tokenTypeOperator || toktype != tokens[len(tokens)-1].Type {
-				indicesCap := len(c.genes) / 4  // arbitrarily padded cap for number tokens
-				if toktype == tokenTypeOperator {
-					indicesCap = 1
-				}
-
 				tokens = append(tokens, decodeToken{
 					Type:     toktype,
 					Chars:    tokenCharsBuf[tokenCharsLen:],
 					CharsLen: 0,
-					Indices:  make([]int, 0, indicesCap),
+					Indices:  indicesBuf[indicesLen:],
+					IndicesLen: 0,
 				})
 			}
 
 			token := &tokens[len(tokens)-1]
+
 			token.Chars[token.CharsLen] = value
 			token.CharsLen++
 			tokenCharsLen++
-			token.Indices = append(token.Indices, i)
+
+			token.Indices[token.IndicesLen] = i
+			token.IndicesLen++
+			indicesLen++
 
 			// NOTE: this validity may be reversed during parsing
 			validityBuf[i] = byte(Valid)
@@ -911,7 +915,14 @@ func (c *Chromosome) Decode() *DecodeResult {
 		if tok.CharsLen == 0 {
 			continue
 		}
+
+		// Cement the length of a token's slices using its bookkeeping Len fields.
+		// This is performed here, during parsing, instead of during tokenization
+		// to avoid the need for a separate case outside the tokenization loop
+		// to handle the last token (assuming this cementing would be performed
+		//on the previous token whenever a new token was found)
 		tok.Chars = tok.Chars[:tok.CharsLen]
+		tok.Indices = tok.Indices[:tok.IndicesLen]
 
 		var peek *decodeToken = nil
 		var past *decodeToken = nil
@@ -931,6 +942,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 				tok.Chars = tok.Chars[1:]
 				tok.CharsLen--
 				tok.Indices = tok.Indices[1:]
+				tok.IndicesLen--
 			}
 
 			// Truncate to max digits
