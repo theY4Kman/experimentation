@@ -841,12 +841,15 @@ type decodeToken struct {
 }
 
 func tokenTypeOfByte(c byte) decodeTokenType {
-	if _, isOperator := GeneOperatorsSet[c]; isOperator {
+	switch c {
+	case '+', '-', '*', '/':
 		return tokenTypeOperator
-	} else if _, isDigit := GeneDigitsSet[c]; isDigit {
-		return tokenTypeNumber
-	} else {
-		return tokenTypeUnknown
+	default:
+		if c >= '0' && c <= '9' {
+			return tokenTypeNumber
+		} else {
+			return tokenTypeUnknown
+		}
 	}
 }
 
