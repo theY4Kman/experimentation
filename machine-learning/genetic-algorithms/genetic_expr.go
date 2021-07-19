@@ -258,6 +258,10 @@ func (sim *Simulation) Init(solution int) {
 	}
 }
 
+func (sim *Simulation) Iteration() uint {
+	return sim.iteration
+}
+
 func (sim *Simulation) randomMember() *PopulationMember {
 	chromosome := sim.RandomChromosome()
 	return &PopulationMember{
@@ -300,6 +304,7 @@ func (sim *Simulation) Solutions() []*Chromosome {
 func (sim *Simulation) Run() {
 	fmt.Printf("Solving for: %d\n\n", sim.solution)
 
+	startedAt := time.Now()
 	for {
 		if sim.Step() {
 			fmt.Printf("Iteration %d — SOLVED\n\n", sim.iteration)
@@ -319,10 +324,17 @@ func (sim *Simulation) Run() {
 			fmt.Printf("\n%s\n\n", fittestChromosome.VerboseString())
 		}
 	}
+	elapsed := time.Since(startedAt)
 
 	for _, chromosome := range sim.Solutions() {
 		fmt.Printf("%s\n\n\n", chromosome.VerboseString())
 	}
+
+	fmt.Printf("Elapsed time: %s\n", elapsed)
+	avgIterationTime := time.Duration(uint(elapsed) / sim.iteration)
+	fmt.Printf("Avg iteration runtime: %s\n", avgIterationTime)
+
+	fmt.Println()
 }
 
 // Step iterates the population, and returns whether a solution has been found
