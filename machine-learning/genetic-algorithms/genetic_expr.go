@@ -396,7 +396,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 
 		if rng.Float64() < sim.ctx.CrossoverRate {
 			var err error
-			a, b, err = CrossOver(a, b)
+			a, b, err = CrossOverWithRand(a, b, rng)
 
 			if err != nil {
 				// TODO: handle gracefully
@@ -524,6 +524,19 @@ func (sim *Simulation) selectChromosomePairFromSortedSliceAndRand(chromosomes Po
 	return selection[0], selection[1]
 }
 
+// CrossOver creates two new Chromosomes from the provided two,
+// with the higher and lower bits swapped at a random number of bits
+func (sim *Simulation) CrossOver(a, b *Chromosome) (*Chromosome, *Chromosome, error) {
+	rng := randPool.Get().(*rand.Rand)
+	defer randPool.Put(rng)
+	return CrossOverWithRand(a, b, rng)
+}
+
+func CrossOverWithRand(a, b *Chromosome, rng *rand.Rand) (*Chromosome, *Chromosome, error) {
+	fulcrum := rng.Intn(len(a.genes))
+	return CrossoverFulcrum(a, b, fulcrum)
+}
+
 type Chromosome struct {
 	genes   []byte
 	ctx     *simulationContext
@@ -638,13 +651,6 @@ func CrossoverFulcrum(a, b *Chromosome, fulcrum int) (*Chromosome, *Chromosome, 
 	}
 
 	return newA, newB, nil
-}
-
-// CrossOver creates two new Chromosomes from the provided two,
-// with the higher and lower bits swapped at a random number of bits
-func CrossOver(a, b *Chromosome) (*Chromosome, *Chromosome, error) {
-	fulcrum := rand.Intn(len(a.genes))
-	return CrossoverFulcrum(a, b, fulcrum)
 }
 
 func (c *Chromosome) String() string {
