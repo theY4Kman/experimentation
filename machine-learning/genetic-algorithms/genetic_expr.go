@@ -1,10 +1,7 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"github.com/PaesslerAG/gval"
-	"github.com/hashicorp/golang-lru"
 	"math"
 	"math/rand"
 	"sort"
@@ -48,15 +45,11 @@ var GeneDigits = []byte("01234567890")
 var GeneOperatorsSet map[byte]struct{}
 var GeneDigitsSet map[byte]struct{}
 
-var exprLang gval.Language
-
 var randPool = sync.Pool{
 	New: func() interface{} {
 		return rand.New(rand.NewSource(rand.Int63()))
 	},
 }
-
-var expressionResultCache *lru.Cache
 
 func init() {
 	ValueGenes = make(map[byte]byte)
@@ -80,27 +73,6 @@ func init() {
 	GeneDigitsSet = make(map[byte]struct{})
 	for _, digit := range GeneDigits {
 		GeneDigitsSet[digit] = struct{}{}
-	}
-
-
-	// Create an arithmetic expressions Language which supports a "+" unary prefix operator
-	exprLang = gval.NewLanguage(
-		gval.Arithmetic(),
-		gval.PrefixOperator("+", func(c context.Context, parameter interface{}) (interface{}, error) {
-			p, isFloat := parameter.(float64)
-			if !isFloat {
-				return nil, fmt.Errorf("expected float, got: %s", parameter)
-			}
-
-			return +p, nil
-		}),
-	)
-
-	var err error
-	expressionResultCache, err = lru.New(256)
-	if err != nil {
-		// TODO: handle more gracefully?
-		panic(err)
 	}
 }
 
@@ -160,16 +132,27 @@ type SimulationParams struct {
 type simulationContext struct {
 	SimulationParams
 
-	// Enables reuse of buffers used within Chromosome.Decode
-	decodeBufPool sync.Pool
-
-	// Enables reuse of stacks used for expression evaluation within Chromosome.Decode
-	stackPool sync.Pool
+	// Enables reuse / allocation amortization of buffers/stacks used within Chromosome.Decode
+	decodeStatePool sync.Pool
 }
 
-type decodeStacks struct {
+type decodeState struct {
+	validityBuf []byte
+	rawExprBuf []byte
+	exprBuf []byte
+	tokenCharsBuf []byte
+	indicesBuf []int
+
+	tokens []decodeToken
+	validTokens []*decodeToken
+
 	ops *staticByteStack
 	values *staticFloatStack
+}
+
+func (d *decodeState) Reset() {
+	d.ops.Reset()
+	d.values.Reset()
 }
 
 func DefaultSimulationParams() *SimulationParams {
@@ -220,16 +203,25 @@ func NewSimulation(params *SimulationParams) *Simulation {
 	sim := &Simulation{
 		ctx: &simulationContext{
 			SimulationParams: *params,
-			decodeBufPool: sync.Pool{
+			decodeStatePool: sync.Pool{
 				New: func() interface{} {
-					return make([]byte, params.ChromosomeSize)
-				},
-			},
-			stackPool: sync.Pool{
-				New: func() interface{} {
-					return &decodeStacks{
-						ops:    newStaticByteStack(params.ChromosomeSize),
-						values: newStaticFloatStack(params.ChromosomeSize),
+					numByteBufs := 4
+					byteBuf := make([]byte, numByteBufs * params.ChromosomeSize)
+
+					getBuf := func(i int) []byte {
+						return byteBuf[i*params.ChromosomeSize:(i+1)*params.ChromosomeSize]
+					}
+
+					return &decodeState{
+						validityBuf:   getBuf(0),
+						rawExprBuf:    getBuf(1),
+						exprBuf:       getBuf(2),
+						tokenCharsBuf: getBuf(3),
+						indicesBuf:    make([]int, params.ChromosomeSize),
+						tokens:        make([]decodeToken, params.ChromosomeSize),
+						validTokens:   make([]*decodeToken, params.ChromosomeSize),
+						ops:           newStaticByteStack(params.ChromosomeSize),
+						values:        newStaticFloatStack(params.ChromosomeSize),
 					}
 				},
 			},
@@ -783,43 +775,12 @@ type DecodeResult struct {
 	evalErr   error
 }
 
-// LRU-cached results of evaluation
-type cachedEvaluation struct {
-	evaluated *float64
-	evalErr   error
-}
-
 func (d *DecodeResult) Evaluate() (float64, error) {
-returnDecodeResultCache:
 	if d.evaluated != nil {
 		return *d.evaluated, d.evalErr
-	} else if d.evalErr != nil {
+	} else {
 		return 0, d.evalErr
 	}
-
-	if cached, isCached := expressionResultCache.Get(d.Expression); isCached {
-		cachedRes := cached.(*cachedEvaluation)
-		d.evaluated = cachedRes.evaluated
-		d.evalErr = cachedRes.evalErr
-		goto returnDecodeResultCache
-	}
-
-	result, err := exprLang.Evaluate(d.Expression, nil)
-	d.evalErr = err
-
-	if err == nil {
-		evaluated := result.(float64)
-		d.evaluated = &evaluated
-	} else {
-		d.evaluated = nil
-	}
-
-	expressionResultCache.Add(d.Expression, &cachedEvaluation{
-		evaluated: d.evaluated,
-		evalErr:   d.evalErr,
-	})
-
-	goto returnDecodeResultCache
 }
 
 type Validity rune
@@ -860,20 +821,22 @@ func (c *Chromosome) Decode() *DecodeResult {
 		return c.decoded
 	}
 
-	validityBuf := c.ctx.decodeBufPool.Get().([]byte)
-	defer c.ctx.decodeBufPool.Put(validityBuf)
+	state := c.ctx.decodeStatePool.Get().(*decodeState)
+	defer func() {
+		state.Reset()
+		c.ctx.decodeStatePool.Put(state)
+	}()
+
+	validityBuf := state.validityBuf
 
 	rawExprLen := 0
-	rawExprBuf := c.ctx.decodeBufPool.Get().([]byte)
-	defer c.ctx.decodeBufPool.Put(rawExprBuf)
+	rawExprBuf := state.rawExprBuf
 
 	exprLen := 0
-	exprBuf := c.ctx.decodeBufPool.Get().([]byte)
-	defer c.ctx.decodeBufPool.Put(exprBuf)
+	exprBuf := state.exprBuf
 
 	tokenCharsLen := 0
-	tokenCharsBuf := c.ctx.decodeBufPool.Get().([]byte)
-	defer c.ctx.decodeBufPool.Put(tokenCharsBuf)
+	tokenCharsBuf := state.tokenCharsBuf
 
 	writeByte := func(buf []byte, bufLen *int, c byte) {
 		buf[*bufLen] = c
@@ -885,27 +848,30 @@ func (c *Chromosome) Decode() *DecodeResult {
 	}
 
 	indicesLen := 0
-	indicesBuf := make([]int, c.ctx.ChromosomeSize)
+	indicesBuf := state.indicesBuf
 
-	// A guess at how many tokens there will be
-	estimatedNumTokens := c.ctx.ChromosomeSize / 3
-	tokens := make([]decodeToken, 0, estimatedNumTokens)
+	tokensLen := 0
+	tokens := state.tokens
+
+	validTokensLen := 0
+	validTokens := state.validTokens
 
 	for i, gene := range c.Genes() {
 		if value, isKnown := GeneValues[gene]; isKnown {
 			writeByte(rawExprBuf, &rawExprLen, value)
 
 			toktype := tokenTypeOfByte(value)
-			if len(tokens) == 0 || toktype == tokenTypeOperator || toktype != tokens[len(tokens)-1].Type {
-				tokens = append(tokens, decodeToken{
+			if tokensLen == 0 || toktype == tokenTypeOperator || toktype != tokens[tokensLen-1].Type {
+				tokens[tokensLen] = decodeToken{
 					Type:       toktype,
 					Len:        0,
 					Chars:      tokenCharsBuf[tokenCharsLen:],
 					Indices:    indicesBuf[indicesLen:],
-				})
+				}
+				tokensLen++
 			}
 
-			token := &tokens[len(tokens)-1]
+			token := &tokens[tokensLen-1]
 
 			token.Chars[token.Len] = value
 			token.Indices[token.Len] = i
@@ -921,15 +887,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 		}
 	}
 
-	stack := c.ctx.stackPool.Get().(*decodeStacks)
-	defer func() {
-		stack.ops.Reset()
-		stack.values.Reset()
-		c.ctx.stackPool.Put(stack)
-	}()
-
-	ops := stack.ops
-	values := stack.values
+	ops := state.ops
+	values := state.values
 
 	evalOp := func() {
 		lhs, _ := values.Pop()
@@ -951,9 +910,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 		values.Push(result)
 	}
 
-	validTokens := make([]*decodeToken, 0, len(tokens))
-
-	for i := range tokens {
+	for i := 0; i < tokensLen; i++ {
 		tok := &tokens[i]
 		if tok.Len == 0 {
 			continue
@@ -970,11 +927,11 @@ func (c *Chromosome) Decode() *DecodeResult {
 		var peek *decodeToken = nil
 		var past *decodeToken = nil
 
-		if i < len(tokens)-1 {
+		if i+1 < tokensLen {
 			peek = &tokens[i+1]
 		}
-		if len(validTokens) > 0 {
-			past = validTokens[len(validTokens)-1]
+		if validTokensLen > 0 {
+			past = validTokens[validTokensLen-1]
 		}
 
 		switch tok.Type {
@@ -1013,7 +970,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 			}
 
 			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.Len])
-			validTokens = append(validTokens, tok)
+			validTokens[validTokensLen] = tok
+			validTokensLen++
 
 			err := values.Push(float64(num))
 			if err != nil {
@@ -1033,7 +991,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 
 			if isValidUnary || isValidBinary {
 				writeByte(exprBuf, &exprLen, op)
-				validTokens = append(validTokens, tok)
+				validTokens[validTokensLen] = tok
+				validTokensLen++
 
 				if ops.Size() > 0 {
 					precedence := precedenceOf(op)
