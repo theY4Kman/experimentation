@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math"
 	"math/rand"
@@ -95,9 +96,34 @@ func init() {
 func main() {
 	rand.Seed(time.Now().Unix())
 
+	var solution = -1
+	flag.IntVar(&solution, "solution", solution, "Solution to search for")
+
 	params := DefaultSimulationParams()
+	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
+	flag.IntVar(&params.TermMaxDigits, "max-digits", params.TermMaxDigits, "Maximum number of digits allowed in a number term")
+	flag.Float64Var(&params.ImperfectMaxScore, "imperfect-max-score", params.ImperfectMaxScore, "Maximum possible score allowed for an imperfect solution")
+	flag.Float64Var(&params.NonIntegerScoreMultiplier, "non-integer-score-multiplier", params.NonIntegerScoreMultiplier, "Multiplier applied to scores of non-integer solutions, usually as a negative bias")
+	flag.IntVar(&params.PopulationSize, "population-size", params.PopulationSize, "Number of chromosomes in the population")
+	flag.Float64Var(&params.CrossoverRate, "crossover-rate", params.CrossoverRate, "Rate at which two chromosomes will cross over (have their low/high bits swapped at a random fulcrum)")
+	flag.Float64Var(&params.BaseMutationRate, "base-mutation-rate", params.BaseMutationRate, "Affects the likelihood and rate of mutations and rotations")
+	flag.IntVar(&params.NumGenerationWorkers, "num-generation-workers", params.NumGenerationWorkers, "Number of goroutines to utilize when creating new population generations. Set to 0 to disable concurrency.")
+
+	flag.Parse()
+
+	wasSolutionProvided := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "solution" {
+			wasSolutionProvided = true
+		}
+	})
+
+	if !wasSolutionProvided {
+		solution = rand.Intn(9999999999)
+	}
+
 	sim := NewSimulation(params)
-	sim.Init(rand.Intn(9999999))
+	sim.Init(solution)
 	sim.Run()
 }
 
