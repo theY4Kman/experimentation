@@ -928,8 +928,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 	values := state.values
 
 	evalOp := func() {
-		lhs, _ := values.Pop()
 		rhs, _ := values.Pop()
+		lhs, _ := values.Pop()
 		op, _ := ops.Pop()
 
 		var result float64

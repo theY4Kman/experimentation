@@ -95,6 +95,9 @@ var _ = Describe("Chromosome", func() {
 		// Ensure prefixes are evaluated correctly
 		Entry("+1", "+1", 1.0),
 		Entry("-1", "-1", -1.0),
+
+		// Ensure math is correct for some complex expressions
+		Entry("8-264*38*265*824+966+92*37*891+285", "8-264*38*265*824+966+92*37*891+285", -2187553297.0),
 	)
 
 	DescribeTable("LRotate",
@@ -138,21 +141,7 @@ var _ = Describe("Chromosome", func() {
 	)
 })
 
-var _ = Describe("Simulation", func() {
-	DescribeTable("Run",
-		func(solution int) {
-			rand.Seed(0)  // use static seed for an inkling of repeatability
-
-			sim := NewSimulation(DefaultSimulationParams())
-			sim.Init(solution)
-			sim.Run()
-		},
-
-		FEntry("987654321", 987654321),
-	)
-})
-
-func TestSimulation_Run(t *testing.T) {
+func BenchmarkSimulation_Run(b *testing.B) {
 	rand.Seed(0)  // use static seed for an inkling of repeatability
 
 	sim := NewSimulation(DefaultSimulationParams())
