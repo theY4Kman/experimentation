@@ -97,7 +97,12 @@ func main() {
 	rand.Seed(time.Now().Unix())
 
 	var solution = -1
-	flag.IntVar(&solution, "solution", solution, "Solution to search for")
+	flag.IntVar(&solution, "solution", solution, "Solution to search for. A random solution will be selected if not provided.")
+
+	// Highest continuous integer value that can be stored in a float
+	// (i.e. if you add 1 to float64(9007199254740992), you will get 9007199254740992, because 9007199254740993 cannot be represented exactly)
+	var randSolutionMax = 9007199254740992
+	flag.IntVar(&randSolutionMax, "max-random-solution", randSolutionMax, "If no explicit solution is provided, this dictates the maximum value of the randomly-selected solution (default is highest continuous int value which can be stored in a float64)")
 
 	params := DefaultSimulationParams()
 	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
@@ -119,7 +124,7 @@ func main() {
 	})
 
 	if !wasSolutionProvided {
-		solution = rand.Intn(9999999999)
+		solution = rand.Intn(randSolutionMax)
 	}
 
 	sim := NewSimulation(params)
