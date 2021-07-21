@@ -167,7 +167,8 @@ type SimulationParams struct {
 	NumEvaluationWorkers int
 
 	// Number of workers to utilize when creating new generations of the Population.
-	// Set to 0 to run without goroutines.
+	// Set to 0 to run without goroutines. Set to -1 to instruct the Simulation to choose
+	// an appropriate value, based on the PopulationSize.
 	NumGenerationWorkers int
 }
 
@@ -210,13 +211,8 @@ func DefaultSimulationParams() *SimulationParams {
 		CrossoverRate:    0.8,
 		BaseMutationRate: 0.02,
 
-		//XXX///////////////////////////////////////////////////////////////////////////////////////////
-		//NumEvaluationWorkers: 0,
-		NumEvaluationWorkers: 4,
-
-		//XXX///////////////////////////////////////////////////////////////////////////////////////////
-		//NumGenerationWorkers: 0,
-		NumGenerationWorkers: 4,
+		NumEvaluationWorkers: 0,
+		NumGenerationWorkers: -1,
 	}
 }
 
@@ -269,6 +265,10 @@ func NewSimulation(params *SimulationParams) *Simulation {
 			},
 		},
 		iteration: 1,
+	}
+
+	if sim.ctx.NumGenerationWorkers == -1 {
+		sim.ctx.NumGenerationWorkers = sim.ctx.PopulationSize / 4
 	}
 
 	return sim
