@@ -100,18 +100,18 @@ func main() {
 	rand.Seed(time.Now().Unix())
 
 	var solution = -1
-	flag.IntVar(&solution, "solution", solution, "Solution to search for. A random solution will be selected if not provided.")
+	flag.IntVar(&solution, "target", solution, "Solution to search for. A random target will be selected if not provided.")
 
 	// Highest continuous integer value that can be stored in a float
 	// (i.e. if you add 1 to float64(9007199254740992), you will get 9007199254740992, because 9007199254740993 cannot be represented exactly)
 	var randSolutionMax = 9007199254740992
-	flag.IntVar(&randSolutionMax, "max-random-solution", randSolutionMax, "If no explicit solution is provided, this dictates the maximum value of the randomly-selected solution (default is highest continuous int value which can be stored in a float64)")
+	flag.IntVar(&randSolutionMax, "max-random-target", randSolutionMax, "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default is highest continuous int value which can be stored in a float64)")
 
 	params := DefaultSimulationParams()
 	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
 	flag.IntVar(&params.TermMaxDigits, "max-digits", params.TermMaxDigits, "Maximum number of digits allowed in a number term")
 	flag.UintVar(&params.FloatPrecision, "precision", params.FloatPrecision, "Precision to use for floating point numbers during evaluation")
-	flag.Float64Var(&params.ImperfectMaxScore, "imperfect-max-score", params.ImperfectMaxScore, "Maximum possible score allowed for an imperfect solution")
+	flag.Float64Var(&params.ImperfectMaxScore, "imperfect-max-score", params.ImperfectMaxScore, "Maximum possible score allowed for an imperfect target")
 	flag.Float64Var(&params.NonIntegerScoreMultiplier, "non-integer-score-multiplier", params.NonIntegerScoreMultiplier, "Multiplier applied to scores of non-integer solutions, usually as a negative bias")
 	flag.IntVar(&params.PopulationSize, "population-size", params.PopulationSize, "Number of chromosomes in the population")
 	flag.Float64Var(&params.CrossoverRate, "crossover-rate", params.CrossoverRate, "Rate at which two chromosomes will cross over (have their low/high bits swapped at a random fulcrum)")
@@ -122,7 +122,7 @@ func main() {
 
 	wasSolutionProvided := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "solution" {
+		if f.Name == "target" {
 			wasSolutionProvided = true
 		}
 	})
@@ -134,10 +134,6 @@ func main() {
 	sim := NewSimulation(params)
 	sim.Init(solution)
 	sim.Run()
-}
-
-func isIntegral(val float64) bool {
-	return val == float64(int(val))
 }
 
 type SimulationParams struct {
@@ -152,15 +148,15 @@ type SimulationParams struct {
 	// Lower numbers may result in precision/accuracy errors leading to false positives and false negatives.
 	FloatPrecision uint
 
-	// Maximum possible score a non-exact solution can have.
-	// Due to how fitness is evaluated — essentially, 1 / abs(result - solution) — if
-	// a result is only 1 away from the solution, its fitness would be 1 / 1 = 1, which
+	// Maximum possible score a non-exact target can have.
+	// Due to how fitness is evaluated — essentially, 1 / abs(result - target) — if
+	// a result is only 1 away from the target, its fitness would be 1 / 1 = 1, which
 	// is a perfect score. To combat this, we cap the maximum score a non-exact solution can have.
 	ImperfectMaxScore float64
 
 	// Multiplier applied to fitness scores of possible solutions which are not
 	// whole integers. This serves to discourage answers with decimal parts, which
-	// tend to be further from the solution than their relative distance on the
+	// tend to be further from the target than their relative distance on the
 	// number line is.
 	NonIntegerScoreMultiplier float64
 
@@ -233,8 +229,8 @@ func DefaultSimulationParams() *SimulationParams {
 
 type Simulation struct {
 	ctx         *simulationContext
-	solution    int
-	solutionBig *big.Float
+	target    int
+	targetBig *big.Float
 
 	iteration  uint
 	population Population
@@ -290,10 +286,10 @@ func NewSimulation(params *SimulationParams) *Simulation {
 	return sim
 }
 
-// Init creates the initial Population and sets the target solution
+// Init creates the initial Population and sets the target target
 func (sim *Simulation) Init(solution int) {
-	sim.solution = solution
-	sim.solutionBig = big.NewFloat(float64(sim.solution))
+	sim.target = solution
+	sim.targetBig = big.NewFloat(float64(sim.target))
 	sim.population = make([]*PopulationMember, sim.ctx.PopulationSize)
 
 	for i := range sim.population {
@@ -318,7 +314,7 @@ func (sim *Simulation) calculateFitness(evaluated *big.Float, err error) float64
 		return 0
 	}
 
-	if sim.solutionBig.Cmp(evaluated) == 0 {
+	if sim.targetBig.Cmp(evaluated) == 0 {
 		return 1
 	}
 
@@ -330,7 +326,7 @@ func (sim *Simulation) calculateFitness(evaluated *big.Float, err error) float64
 	}
 
 	approxEvaluated, _ := evaluated.Float64()
-	denominator := math.Trunc(math.Abs(float64(sim.solution) - approxEvaluated))
+	denominator := math.Trunc(math.Abs(float64(sim.target) - approxEvaluated))
 	if denominator == 0 {
 		// Avoid division by zero
 		return 0
@@ -345,7 +341,7 @@ func (sim *Simulation) Solutions() []*Chromosome {
 
 // Run the Simulation until a solution is found, printing status to the console periodically
 func (sim *Simulation) Run() {
-	fmt.Printf("Solving for: %d\n\n", sim.solution)
+	fmt.Printf("Solving for: %d\n\n", sim.target)
 
 	startedAt := time.Now()
 	for {
@@ -353,7 +349,7 @@ func (sim *Simulation) Run() {
 			fmt.Printf("Iteration %d — SOLVED\n\n", sim.iteration)
 			break
 		} else if sim.iteration%100 == 0 {
-			fmt.Printf("Iteration %d — solving for: %d\n", sim.iteration, sim.solution)
+			fmt.Printf("Iteration %d — solving for: %d\n", sim.iteration, sim.target)
 
 			maxFitness := -1.0
 			var fittestChromosome *Chromosome = nil
