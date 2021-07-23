@@ -50,7 +50,9 @@ var GeneValues = map[byte]byte{
 	0b10111: '-',
 	0b11010: '*',
 	0b11011: '/',
-	0b11100: '+',
+
+	// One unassigned gene, for testing purposes
+	//0b11100: '?',
 }
 
 var ValueGenes map[byte]byte
