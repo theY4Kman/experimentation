@@ -142,7 +142,8 @@ type SimulationParams struct {
 	// Number of genes each Chromosome will have
 	ChromosomeSize int
 
-	// Max number of digits a term may have before the rest are marked invalid, and truncated
+	// Max number of digits a term may have before the rest are marked invalid, and truncated.
+	// Set to value ≤0 to allow any amount of digits.
 	TermMaxDigits int
 
 	// Maximum possible score a non-exact solution can have.
@@ -1015,7 +1016,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 			}
 
 			// Truncate to max digits
-			if len(tok.Chars) > c.ctx.TermMaxDigits {
+			if c.ctx.TermMaxDigits > 0 && len(tok.Chars) > c.ctx.TermMaxDigits {
 				for k := c.ctx.TermMaxDigits; k < tok.Len; k++ {
 					validityBuf[tok.Indices[k]] = byte(Invalid)
 				}
