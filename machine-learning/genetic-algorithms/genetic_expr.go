@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"sort"
 	"strings"
@@ -109,6 +110,7 @@ func main() {
 	params := DefaultSimulationParams()
 	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
 	flag.IntVar(&params.TermMaxDigits, "max-digits", params.TermMaxDigits, "Maximum number of digits allowed in a number term")
+	flag.UintVar(&params.FloatPrecision, "precision", params.FloatPrecision, "Precision to use for floating point numbers during evaluation")
 	flag.Float64Var(&params.ImperfectMaxScore, "imperfect-max-score", params.ImperfectMaxScore, "Maximum possible score allowed for an imperfect solution")
 	flag.Float64Var(&params.NonIntegerScoreMultiplier, "non-integer-score-multiplier", params.NonIntegerScoreMultiplier, "Multiplier applied to scores of non-integer solutions, usually as a negative bias")
 	flag.IntVar(&params.PopulationSize, "population-size", params.PopulationSize, "Number of chromosomes in the population")
@@ -145,6 +147,10 @@ type SimulationParams struct {
 	// Max number of digits a term may have before the rest are marked invalid, and truncated.
 	// Set to value ≤0 to allow any amount of digits.
 	TermMaxDigits int
+
+	// Precision of floating point numbers used in evaluations.
+	// Lower numbers may result in precision/accuracy errors leading to false positives and false negatives.
+	FloatPrecision uint
 
 	// Maximum possible score a non-exact solution can have.
 	// Due to how fitness is evaluated — essentially, 1 / abs(result - solution) — if
@@ -198,7 +204,7 @@ type decodeState struct {
 	validTokens []*decodeToken
 
 	ops    *staticByteStack
-	values *staticFloatStack
+	values *staticBigFloatStack
 }
 
 func (d *decodeState) Reset() {
@@ -211,6 +217,7 @@ func DefaultSimulationParams() *SimulationParams {
 		ChromosomeSize: 40,
 
 		TermMaxDigits: 3,
+		FloatPrecision: 128,
 
 		ImperfectMaxScore:         0.96,
 		NonIntegerScoreMultiplier: 0.2,
@@ -225,8 +232,9 @@ func DefaultSimulationParams() *SimulationParams {
 }
 
 type Simulation struct {
-	ctx      *simulationContext
-	solution int
+	ctx         *simulationContext
+	solution    int
+	solutionBig *big.Float
 
 	iteration  uint
 	population Population
@@ -267,7 +275,7 @@ func NewSimulation(params *SimulationParams) *Simulation {
 						tokens:        make([]decodeToken, params.ChromosomeSize),
 						validTokens:   make([]*decodeToken, params.ChromosomeSize),
 						ops:           newStaticByteStack(params.ChromosomeSize),
-						values:        newStaticFloatStack(params.ChromosomeSize),
+						values:        newStaticBigFloatStack(params.ChromosomeSize, params.FloatPrecision),
 					}
 				},
 			},
@@ -285,6 +293,7 @@ func NewSimulation(params *SimulationParams) *Simulation {
 // Init creates the initial Population and sets the target solution
 func (sim *Simulation) Init(solution int) {
 	sim.solution = solution
+	sim.solutionBig = big.NewFloat(float64(sim.solution))
 	sim.population = make([]*PopulationMember, sim.ctx.PopulationSize)
 
 	for i := range sim.population {
@@ -304,30 +313,30 @@ func (sim *Simulation) randomMember() *PopulationMember {
 	}
 }
 
-func (sim *Simulation) calculateFitness(evaluated float64, err error) float64 {
+func (sim *Simulation) calculateFitness(evaluated *big.Float, err error) float64 {
 	if err != nil {
 		return 0
 	}
 
-	isInteger := isIntegral(evaluated)
-	if isInteger && sim.solution == int(evaluated) {
+	if sim.solutionBig.Cmp(evaluated) == 0 {
 		return 1
 	}
 
 	var intBias float64
-	if isInteger {
+	if evaluated.IsInt() {
 		intBias = 1
 	} else {
 		intBias = sim.ctx.NonIntegerScoreMultiplier
 	}
 
-	denominator := math.Trunc(math.Abs(float64(sim.solution) - evaluated))
+	approxEvaluated, _ := evaluated.Float64()
+	denominator := math.Trunc(math.Abs(float64(sim.solution) - approxEvaluated))
 	if denominator == 0 {
 		// Avoid division by zero
 		return 0
 	}
 
-	return sim.ctx.ImperfectMaxScore * 1 / denominator * intBias
+	return sim.ctx.ImperfectMaxScore / denominator * intBias
 }
 
 func (sim *Simulation) Solutions() []*Chromosome {
@@ -839,15 +848,15 @@ type DecodeResult struct {
 	Validity string
 
 	// Cached results of evaluation
-	evaluated *float64
+	evaluated *big.Float
 	evalErr   error
 }
 
-func (d *DecodeResult) Evaluate() (float64, error) {
+func (d *DecodeResult) Evaluate() (*big.Float, error) {
 	if d.evaluated != nil {
-		return *d.evaluated, d.evalErr
+		return d.evaluated, d.evalErr
 	} else {
-		return 0, d.evalErr
+		return nil, d.evalErr
 	}
 }
 
@@ -960,24 +969,38 @@ func (c *Chromosome) Decode() *DecodeResult {
 
 	ops := state.ops
 	values := state.values
+	var evalErr error = nil
 
 	evalOp := func() {
+		if evalErr != nil {
+			return
+		}
+
 		rhs, _ := values.Pop()
 		lhs, _ := values.Pop()
 		op, _ := ops.Pop()
 
-		var result float64
+		var result *big.Float
 		switch op {
 		case '+':
-			result = lhs + rhs
+			result = lhs.Add(lhs, rhs)
 		case '-':
-			result = lhs - rhs
+			result = lhs.Sub(lhs, rhs)
 		case '*':
-			result = lhs * rhs
+			result = lhs.Mul(lhs, rhs)
 		case '/':
-			result = lhs / rhs
+			// Detect and avoid division-by-zero panics
+			if rhs.Cmp(&big.Float{}) == 0 {
+				evalErr = fmt.Errorf("division by zero")
+				ops.Reset()
+				values.Reset()
+				return
+			} else {
+				result = lhs.Quo(lhs, rhs)
+			}
 		}
 
+		values.Checkin(rhs)
 		values.Push(result)
 	}
 
@@ -1025,30 +1048,34 @@ func (c *Chromosome) Decode() *DecodeResult {
 				tok.Indices = tok.Indices[:tok.Len]
 			}
 
-			// Determine value of token
-			num := 0
-			for k := 0; k < tok.Len; k++ {
-				d := tok.Chars[k]
-				num = num*10 + int(d-'0')
-			}
-
-			// Allow prefix - or + for first number
-			if values.Size() == 0 && ops.Size() == 1 {
-				op, _ := ops.Pop()
-				if op == '-' {
-					num *= -1
-				}
-			}
 
 			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.Len])
 			validTokens[validTokensLen] = tok
 			validTokensLen++
 
-			err := values.Push(float64(num))
-			if err != nil {
-				// TODO: curry error (though, stack errors should never happen)
-				fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
-				panic(err)
+			if evalErr == nil {
+				// Determine value of token
+				num := int64(0)
+				for k := 0; k < tok.Len; k++ {
+					d := tok.Chars[k]
+					num = num*10 + int64(d-'0')
+				}
+
+				// Allow prefix - or + for first number
+				if values.Size() == 0 && ops.Size() == 1 {
+					op, _ := ops.Pop()
+					if op == '-' {
+						num *= -1
+					}
+				}
+
+				value := values.Checkout().SetInt64(num)
+				err := values.Push(value)
+				if err != nil {
+					// TODO: curry error (though, stack errors should never happen)
+					fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
+					panic(err)
+				}
 			}
 
 		case tokenTypeOperator:
@@ -1065,23 +1092,25 @@ func (c *Chromosome) Decode() *DecodeResult {
 				validTokens[validTokensLen] = tok
 				validTokensLen++
 
-				if ops.Size() > 0 {
-					precedence := precedenceOf(op)
-					for ops.Size() > 0 {
-						topOp, err := ops.Peek()
-						if err != nil || precedenceOf(topOp) < precedence {
-							break
+				if evalErr == nil {
+					if ops.Size() > 0 {
+						precedence := precedenceOf(op)
+						for ops.Size() > 0 {
+							topOp, err := ops.Peek()
+							if err != nil || precedenceOf(topOp) < precedence {
+								break
+							}
+
+							evalOp()
 						}
-
-						evalOp()
 					}
-				}
 
-				err := ops.Push(op)
-				if err != nil {
-					// TODO: curry error (though, stack errors should never happen)
-					fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
-					panic(err)
+					err := ops.Push(op)
+					if err != nil {
+						// TODO: curry error (though, stack errors should never happen)
+						fmt.Printf("Stack empty when evaluating partial %s (raw %s)\n", string(exprBuf[:exprLen]), string(rawExprBuf[:rawExprLen]))
+						panic(err)
+					}
 				}
 			} else {
 				validityBuf[tok.Indices[0]] = byte(Invalid)
@@ -1089,14 +1118,18 @@ func (c *Chromosome) Decode() *DecodeResult {
 		}
 	}
 
-	for ops.Size() > 0 {
-		evalOp()
-	}
 
-	var evaluated *float64 = nil
-	result, evalErr := values.Pop()
+	var evaluated *big.Float = nil
 	if evalErr == nil {
-		evaluated = &result
+		for ops.Size() > 0 {
+			evalOp()
+		}
+
+		var result *big.Float
+		result, evalErr = values.Pop()
+		if evalErr == nil {
+			evaluated = (&big.Float{}).Copy(result)
+		}
 	}
 
 	c.decoded = &DecodeResult{
@@ -1109,19 +1142,53 @@ func (c *Chromosome) Decode() *DecodeResult {
 	return c.decoded
 }
 
-type staticFloatStack struct {
-	stack  []float64
+type staticBigFloatStack struct {
+	precision uint
+
+	stack  []*big.Float
 	length int
+
+	pool       []*big.Float
+	poolLength int
 }
 
-func newStaticFloatStack(length int) *staticFloatStack {
-	return &staticFloatStack{
-		stack:  make([]float64, length),
+func newStaticBigFloatStack(length int, precision uint) *staticBigFloatStack {
+	pool := make([]*big.Float, length + 1)
+	for i := 0; i < len(pool); i++ {
+		pool[i] = big.NewFloat(0).SetPrec(precision)
+	}
+
+	return &staticBigFloatStack{
+		precision: precision,
+
+		stack:  make([]*big.Float, length),
 		length: 0,
+
+		pool: pool,
+		poolLength: len(pool),
 	}
 }
 
-func (s *staticFloatStack) Push(v float64) error {
+func (s *staticBigFloatStack) Checkout() *big.Float {
+	if s.poolLength > 0 {
+		s.poolLength--
+		return s.pool[s.poolLength]
+	} else {
+		return big.NewFloat(0).SetPrec(s.precision)
+	}
+}
+
+func (s *staticBigFloatStack) Checkin(v *big.Float) error {
+	if s.poolLength == len(s.pool) {
+		return fmt.Errorf("pool is full")
+	}
+
+	s.pool[s.poolLength] = v
+	s.poolLength++
+	return nil
+}
+
+func (s *staticBigFloatStack) Push(v *big.Float) error {
 	if s.length >= len(s.stack) {
 		return fmt.Errorf("stack has reached maximum capacity (%d)", len(s.stack))
 	}
@@ -1131,21 +1198,22 @@ func (s *staticFloatStack) Push(v float64) error {
 	return nil
 }
 
-func (s *staticFloatStack) Pop() (float64, error) {
+func (s *staticBigFloatStack) Pop() (*big.Float, error) {
 	if s.length == 0 {
-		return 0, fmt.Errorf("stack is empty")
+		return nil, fmt.Errorf("stack is empty")
 	}
 
 	s.length--
 	return s.stack[s.length], nil
 }
 
-func (s *staticFloatStack) Size() int {
+func (s *staticBigFloatStack) Size() int {
 	return s.length
 }
 
-func (s *staticFloatStack) Reset() {
+func (s *staticBigFloatStack) Reset() {
 	s.length = 0
+	s.poolLength = len(s.pool)
 }
 
 type staticByteStack struct {
