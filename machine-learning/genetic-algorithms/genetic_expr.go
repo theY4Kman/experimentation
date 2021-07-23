@@ -210,9 +210,9 @@ func (d *decodeState) Reset() {
 
 func DefaultSimulationParams() *SimulationParams {
 	return &SimulationParams{
-		ChromosomeSize: 40,
+		ChromosomeSize: 60,
 
-		TermMaxDigits: 3,
+		TermMaxDigits: -1,
 		FloatPrecision: 128,
 
 		ImperfectMaxScore:         0.96,
