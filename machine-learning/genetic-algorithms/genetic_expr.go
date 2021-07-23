@@ -56,6 +56,8 @@ var GeneValues = map[byte]byte{
 	//0b11100: '?',
 }
 
+var geneValuesArray []byte
+
 var ValueGenes map[byte]byte
 var UnknownGenes []byte
 
@@ -72,9 +74,11 @@ var randPool = sync.Pool{
 }
 
 func init() {
+	geneValuesArray = make([]byte, 1<<GeneBits)
 	ValueGenes = make(map[byte]byte)
 	for gene, value := range GeneValues {
 		ValueGenes[value] = gene
+		geneValuesArray[gene] = value
 	}
 
 	UnknownGenes = make([]byte, 1<<GeneBits-len(GeneValues))
@@ -933,7 +937,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 	validTokens := state.validTokens
 
 	for i, gene := range c.Genes() {
-		if value, isKnown := GeneValues[gene]; isKnown {
+		if value := geneValuesArray[gene]; value != 0 {
 			writeByte(rawExprBuf, &rawExprLen, value)
 
 			toktype := tokenTypeOfByte(value)
