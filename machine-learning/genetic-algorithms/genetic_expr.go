@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"lukechampine.com/frand"
 	"math"
 	"math/big"
-	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -69,7 +69,7 @@ var GeneDigitsSet map[byte]struct{}
 
 var randPool = sync.Pool{
 	New: func() interface{} {
-		return rand.New(rand.NewSource(rand.Int63()))
+		return frand.New()
 	},
 }
 
@@ -101,8 +101,6 @@ func init() {
 }
 
 func main() {
-	rand.Seed(time.Now().Unix())
-
 	var solution = -1
 	flag.IntVar(&solution, "target", solution, "Solution to search for. A random target will be selected if not provided.")
 
@@ -132,7 +130,7 @@ func main() {
 	})
 
 	if !wasSolutionProvided {
-		solution = rand.Intn(randSolutionMax)
+		solution = frand.Intn(randSolutionMax)
 	}
 
 	sim := NewSimulation(params)
@@ -214,7 +212,7 @@ func (d *decodeState) Reset() {
 
 func DefaultSimulationParams() *SimulationParams {
 	return &SimulationParams{
-		ChromosomeSize: 60,
+		ChromosomeSize: 80,
 
 		TermMaxDigits: -1,
 		FloatPrecision: 128,
@@ -434,7 +432,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 	generation := make([]*Chromosome, sim.ctx.PopulationSize)
 	sortedChromosomes := sim.getSortedChromosomes()
 
-	generateChromosomePair := func(i int, rng *rand.Rand) {
+	generateChromosomePair := func(i int, rng *frand.RNG) {
 		chromosomes := make(Population, len(sortedChromosomes))
 		copy(chromosomes, sortedChromosomes)
 
@@ -476,7 +474,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 	}
 
 	if sim.ctx.NumGenerationWorkers == 0 {
-		rng := randPool.Get().(*rand.Rand)
+		rng := randPool.Get().(*frand.RNG)
 		defer randPool.Put(rng)
 
 		for i := 0; i < sim.ctx.PopulationSize; i += 2 {
@@ -491,7 +489,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 			go func() {
 				defer wg.Done()
 
-				rng := randPool.Get().(*rand.Rand)
+				rng := randPool.Get().(*frand.RNG)
 				defer randPool.Put(rng)
 
 				for i := range queue {
@@ -523,12 +521,12 @@ func (sim *Simulation) selectChromosomes(n int) []*PopulationMember {
 }
 
 func (sim *Simulation) selectChromosomesFromSortedSlice(n int, chromosomes Population) []*PopulationMember {
-	rng := randPool.Get().(*rand.Rand)
+	rng := randPool.Get().(*frand.RNG)
 	defer randPool.Put(rng)
 	return sim.selectChromosomesFromSortedSliceAndRand(n, chromosomes, rng)
 }
 
-func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosomes Population, rng *rand.Rand) []*PopulationMember {
+func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosomes Population, rng *frand.RNG) []*PopulationMember {
 	selection := make([]*PopulationMember, n)
 
 	chooseChromosome := func(selectionIndex int, chromosomeIndex int) {
@@ -569,12 +567,12 @@ func (sim *Simulation) selectChromosomePair() (*PopulationMember, *PopulationMem
 }
 
 func (sim *Simulation) selectChromosomePairFromSortedSlice(chromosomes Population) (*PopulationMember, *PopulationMember) {
-	rng := randPool.Get().(*rand.Rand)
+	rng := randPool.Get().(*frand.RNG)
 	defer randPool.Put(rng)
 	return sim.selectChromosomePairFromSortedSliceAndRand(chromosomes, rng)
 }
 
-func (sim *Simulation) selectChromosomePairFromSortedSliceAndRand(chromosomes Population, rng *rand.Rand) (*PopulationMember, *PopulationMember) {
+func (sim *Simulation) selectChromosomePairFromSortedSliceAndRand(chromosomes Population, rng *frand.RNG) (*PopulationMember, *PopulationMember) {
 	selection := sim.selectChromosomesFromSortedSliceAndRand(2, chromosomes, rng)
 	return selection[0], selection[1]
 }
@@ -582,12 +580,12 @@ func (sim *Simulation) selectChromosomePairFromSortedSliceAndRand(chromosomes Po
 // CrossOver creates two new Chromosomes from the provided two,
 // with the higher and lower bits swapped at a random number of bits
 func (sim *Simulation) CrossOver(a, b *Chromosome) (*Chromosome, *Chromosome, error) {
-	rng := randPool.Get().(*rand.Rand)
+	rng := randPool.Get().(*frand.RNG)
 	defer randPool.Put(rng)
 	return CrossOverWithRand(a, b, rng)
 }
 
-func CrossOverWithRand(a, b *Chromosome, rng *rand.Rand) (*Chromosome, *Chromosome, error) {
+func CrossOverWithRand(a, b *Chromosome, rng *frand.RNG) (*Chromosome, *Chromosome, error) {
 	fulcrum := rng.Intn(len(a.genes))
 	return CrossoverFulcrum(a, b, fulcrum)
 }
@@ -619,7 +617,7 @@ func (sim *Simulation) EncodeChromosome(expression string, useRandomUnknownGene 
 		if gene, isValid := ValueGenes[byte(value)]; isValid {
 			chromosome.genes[i] = gene
 		} else if useRandomUnknownGene {
-			chromosome.genes[i] = UnknownGenes[rand.Intn(len(UnknownGenes))]
+			chromosome.genes[i] = UnknownGenes[frand.Intn(len(UnknownGenes))]
 		} else {
 			return nil, fmt.Errorf("unrecognized gene value %c at position %d", value, i)
 		}
@@ -629,7 +627,7 @@ func (sim *Simulation) EncodeChromosome(expression string, useRandomUnknownGene 
 
 func (sim *Simulation) RandomChromosome() *Chromosome {
 	chromosome := sim.NewChromosome()
-	rand.Read(chromosome.genes)
+	frand.Read(chromosome.genes)
 	for i := range chromosome.genes {
 		chromosome.genes[i] &= GeneMask
 	}
@@ -786,11 +784,11 @@ func (c *Chromosome) Genes() []byte {
 
 // Mutate creates a new Chromosome with bits randomly flipped based on mutationRate
 func (c *Chromosome) Mutate(mutationRate float64) *Chromosome {
-	rng := randPool.Get().(*rand.Rand)
+	rng := randPool.Get().(*frand.RNG)
 	defer randPool.Put(rng)
 	return c.MutateWithRand(mutationRate, rng)
 }
-func (c *Chromosome) MutateWithRand(mutationRate float64, rng *rand.Rand) *Chromosome {
+func (c *Chromosome) MutateWithRand(mutationRate float64, rng *frand.RNG) *Chromosome {
 	mutated := c.Copy()
 
 	for i, gene := range mutated.genes {
