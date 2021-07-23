@@ -988,6 +988,8 @@ func (c *Chromosome) Decode() *DecodeResult {
 			// Detect and avoid division-by-zero panics
 			if rhs.Cmp(&big.Float{}) == 0 {
 				evalErr = fmt.Errorf("division by zero")
+				values.Checkin(lhs)
+				values.Checkin(rhs)
 				ops.Reset()
 				values.Reset()
 				return
@@ -1125,6 +1127,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 		result, evalErr = values.Pop()
 		if evalErr == nil {
 			evaluated = (&big.Float{}).Copy(result)
+			values.Checkin(result)
 		}
 	}
 
