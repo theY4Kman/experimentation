@@ -100,16 +100,37 @@ func init() {
 	}
 }
 
+type BigIntValue struct {
+	bigInt *big.Int
+}
+
+func (v BigIntValue) String() string {
+	if v.bigInt != nil {
+		return v.bigInt.String()
+	} else {
+		return ""
+	}
+}
+
+func (v BigIntValue) Set(s string) error {
+	if _, ok := v.bigInt.SetString(s, 10); !ok {
+		return fmt.Errorf("malformed integer %q", s)
+	}
+
+	return nil
+}
+
 func main() {
 	rand.Seed(time.Now().Unix())
 
-	var solution = -1
-	flag.IntVar(&solution, "target", solution, "Solution to search for. A random target will be selected if not provided.")
+	target := new(big.Int)
+	wasTargetProvided := false
 
-	// Highest continuous integer value that can be stored in a float
-	// (i.e. if you add 1 to float64(9007199254740992), you will get 9007199254740992, because 9007199254740993 cannot be represented exactly)
-	var randSolutionMax = 9007199254740992
-	flag.IntVar(&randSolutionMax, "max-random-target", randSolutionMax, "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default is highest continuous int value which can be stored in a float64)")
+	maxRandomTarget := new(big.Int)
+	wasMaxRandomTargetProvided := false
+
+	flag.Var(&BigIntValue{target}, "target", "Solution to search for. A random target will be selected if not provided")
+	flag.Var(&BigIntValue{maxRandomTarget}, "max-random-target", "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default of 2**(precision/2) is used)")
 
 	params := DefaultSimulationParams()
 	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
@@ -124,19 +145,27 @@ func main() {
 
 	flag.Parse()
 
-	wasSolutionProvided := false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "target" {
-			wasSolutionProvided = true
+		switch f.Name {
+		case "target":
+			wasTargetProvided = true
+		case "max-random-target":
+			wasMaxRandomTargetProvided = true
 		}
 	})
 
-	if !wasSolutionProvided {
-		solution = rand.Intn(randSolutionMax)
+	if !wasTargetProvided {
+		if !wasMaxRandomTargetProvided {
+			baseTwoMaxExponent := params.FloatPrecision / 2
+			maxRandomTarget.SetInt64(2).Exp(maxRandomTarget, big.NewInt(int64(baseTwoMaxExponent)), nil)
+		}
+
+		rng := rand.New(rand.NewSource(time.Now().Unix()))
+		target.Rand(rng, maxRandomTarget)
 	}
 
 	sim := NewSimulation(params)
-	sim.Init(solution)
+	sim.Init(target)
 	sim.Run()
 }
 
@@ -232,9 +261,8 @@ func DefaultSimulationParams() *SimulationParams {
 }
 
 type Simulation struct {
-	ctx         *simulationContext
-	target    int
-	targetBig *big.Float
+	ctx    *simulationContext
+	target *big.Float
 
 	iteration  uint
 	population Population
@@ -246,11 +274,11 @@ type Population []*PopulationMember
 
 func (pop Population) Len() int           { return len(pop) }
 func (pop Population) Swap(i, j int)      { pop[i], pop[j] = pop[j], pop[i] }
-func (pop Population) Less(i, j int) bool { return pop[i] != nil && pop[i].fitness < pop[j].fitness }
+func (pop Population) Less(i, j int) bool { return pop[i] != nil && pop[i].fitness.Cmp(pop[j].fitness) < 0 }
 
 type PopulationMember struct {
 	c       *Chromosome
-	fitness float64
+	fitness *big.Float
 }
 
 func NewSimulation(params *SimulationParams) *Simulation {
@@ -290,10 +318,14 @@ func NewSimulation(params *SimulationParams) *Simulation {
 	return sim
 }
 
-// Init creates the initial Population and sets the target target
-func (sim *Simulation) Init(solution int) {
-	sim.target = solution
-	sim.targetBig = big.NewFloat(float64(sim.target))
+// InitFromInt creates the initial Population and sets the target from an int
+func (sim *Simulation) InitFromInt(target int64) {
+	sim.Init(big.NewInt(target))
+}
+
+// Init creates the initial Population and sets the target
+func (sim *Simulation) Init(target *big.Int) {
+	sim.target = new(big.Float).SetPrec(sim.ctx.FloatPrecision).SetInt(target)
 	sim.population = make([]*PopulationMember, sim.ctx.PopulationSize)
 
 	for i := range sim.population {
@@ -307,36 +339,44 @@ func (sim *Simulation) Iteration() uint {
 
 func (sim *Simulation) randomMember() *PopulationMember {
 	chromosome := sim.RandomChromosome()
+	evaluated, err := chromosome.Decode().Evaluate()
 	return &PopulationMember{
 		c:       chromosome,
-		fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
+		fitness: sim.calculateFitness(nil, evaluated, err),
 	}
 }
 
-func (sim *Simulation) calculateFitness(evaluated *big.Float, err error) float64 {
+func (sim *Simulation) calculateFitness(result, evaluated *big.Float, err error) *big.Float {
+	if result == nil {
+		result = big.NewFloat(-1).SetPrec(sim.ctx.FloatPrecision)
+	}
+
 	if err != nil {
-		return 0
+		result.SetInt64(0)
+		return result
 	}
 
-	if sim.targetBig.Cmp(evaluated) == 0 {
-		return 1
+	if sim.target.Cmp(evaluated) == 0 {
+		result.SetInt64(1)
+		return result
 	}
 
-	var intBias float64
-	if evaluated.IsInt() {
-		intBias = 1
-	} else {
-		intBias = sim.ctx.NonIntegerScoreMultiplier
-	}
+	result.Sub(sim.target, evaluated).Abs(result)
+	truncated, _ := result.Int(nil)
+	result.SetInt(truncated)
 
-	approxEvaluated, _ := evaluated.Float64()
-	denominator := math.Trunc(math.Abs(float64(sim.target) - approxEvaluated))
-	if denominator == 0 {
+	if result.Cmp(&big.Float{}) == 0 {
 		// Avoid division by zero
-		return 0
+		result.SetFloat64(sim.ctx.ImperfectMaxScore)
+	} else {
+		result.Quo(big.NewFloat(sim.ctx.ImperfectMaxScore), result)
 	}
 
-	return sim.ctx.ImperfectMaxScore / denominator * intBias
+	if !evaluated.IsInt() {
+		result.Mul(result, big.NewFloat(sim.ctx.NonIntegerScoreMultiplier))
+	}
+
+	return result
 }
 
 func (sim *Simulation) Solutions() []*Chromosome {
@@ -345,20 +385,21 @@ func (sim *Simulation) Solutions() []*Chromosome {
 
 // Run the Simulation until a solution is found, printing status to the console periodically
 func (sim *Simulation) Run() {
-	fmt.Printf("Solving for: %d\n\n", sim.target)
+	targetString := sim.target.Text('f', 0)
+	fmt.Printf("Solving for: %s\n\n", targetString)
 
 	startedAt := time.Now()
 	for {
 		if sim.Step() {
-			fmt.Printf("Iteration %d — SOLVED\n\n", sim.iteration)
+			fmt.Printf("Iteration %d — SOLVED: %s\n\n", sim.iteration, targetString)
 			break
 		} else if sim.iteration%100 == 0 {
-			fmt.Printf("Iteration %d — solving for: %d\n", sim.iteration, sim.target)
+			fmt.Printf("Iteration %d — solving for: %s\n", sim.iteration, targetString)
 
-			maxFitness := -1.0
+			var maxFitness *big.Float = nil
 			var fittestChromosome *Chromosome = nil
 			for _, simC := range sim.population {
-				if simC.fitness > maxFitness {
+				if maxFitness == nil || simC.fitness.Cmp(maxFitness) > 0 {
 					maxFitness = simC.fitness
 					fittestChromosome = simC.c
 				}
@@ -384,7 +425,7 @@ func (sim *Simulation) Run() {
 func (sim *Simulation) Step() bool {
 	sim.iteratePopulation()
 	for _, c := range sim.population {
-		if c.fitness == 1.0 {
+		if approxFitness, acc := c.fitness.Float64(); approxFitness == 1.0 && acc == big.Exact {
 			sim.solutions = append(sim.solutions, c.c)
 		}
 	}
@@ -397,9 +438,11 @@ func (sim *Simulation) iteratePopulation() {
 
 	evaluateChromosomes := func(chromosomes []*Chromosome, startIndex int) {
 		for i, chromosome := range chromosomes {
+			prevFitness := sim.population[startIndex+i].fitness
+			evaluated, err := chromosome.Decode().Evaluate()
 			sim.population[startIndex+i] = &PopulationMember{
 				c:       chromosome,
-				fitness: sim.calculateFitness(chromosome.Decode().Evaluate()),
+				fitness: sim.calculateFitness(prevFitness, evaluated, err),
 			}
 		}
 	}
@@ -438,7 +481,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 		chromosomes := make(Population, len(sortedChromosomes))
 		copy(chromosomes, sortedChromosomes)
 
-		aSim, bSim := sim.selectChromosomePairFromSortedSlice(chromosomes)
+		aSim, bSim := sim.selectChromosomePairFromSortedSliceAndRand(chromosomes, rng)
 		a, b := aSim.c, bSim.c
 
 		generationMultiplier := 2 - math.Log(float64(sim.iteration%100))/math.Log(100)
@@ -446,8 +489,10 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 
 		mutationRate := sim.ctx.BaseMutationRate*generationMultiplier - rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier
 
-		aMutationRate := mutationRate * (1 - math.Abs(aSim.fitness) + rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier)
-		bMutationRate := mutationRate * (1 - math.Abs(bSim.fitness) + rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier)
+		aFitnessApprox, _ := aSim.fitness.Float64()
+		bFitnessApprox, _ := bSim.fitness.Float64()
+		aMutationRate := mutationRate * (1 - math.Abs(aFitnessApprox) + rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier)
+		bMutationRate := mutationRate * (1 - math.Abs(bFitnessApprox) + rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier)
 
 		if rng.Float64() < sim.ctx.CrossoverRate {
 			var err error
@@ -531,26 +576,31 @@ func (sim *Simulation) selectChromosomesFromSortedSlice(n int, chromosomes Popul
 func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosomes Population, rng *rand.Rand) []*PopulationMember {
 	selection := make([]*PopulationMember, n)
 
+	// TODO: reuse allocation
+	totalFitness := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
+	pick := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
+	current := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
+
+	for _, chromosome := range chromosomes {
+		totalFitness.Add(totalFitness, chromosome.fitness)
+	}
+
 	chooseChromosome := func(selectionIndex int, chromosomeIndex int) {
 		selection[selectionIndex] = chromosomes[chromosomeIndex]
+		totalFitness.Sub(totalFitness, chromosomes[chromosomeIndex].fitness)
+
 		chromosomes.Swap(chromosomeIndex, 0)
 		chromosomes = chromosomes[1:]
 	}
 
 nextSelection:
 	for i := 0; i < n; i++ {
-		sort.Sort(chromosomes)
+		current.SetFloat64(0)
 
-		totalFitness := 0.0
-		for _, chromosome := range chromosomes {
-			totalFitness += chromosome.fitness
-		}
-
-		pick := rng.Float64() * totalFitness
-		current := 0.0
+		pick.Mul(totalFitness, pick.SetFloat64(rng.Float64()))
 		for k, chromosome := range chromosomes {
-			current += math.Abs(chromosome.fitness)
-			if current > pick {
+			current.Add(current, chromosome.fitness)
+			if current.Cmp(pick) > 0 {
 				chooseChromosome(i, k)
 				continue nextSelection
 			}
@@ -615,6 +665,8 @@ func (sim *Simulation) EncodeChromosome(expression string, useRandomUnknownGene 
 	}
 
 	chromosome := sim.NewChromosome()
+	chromosome.genes = chromosome.genes[:len(expression)]
+
 	for i, value := range expression {
 		if gene, isValid := ValueGenes[byte(value)]; isValid {
 			chromosome.genes[i] = gene
@@ -1138,7 +1190,7 @@ func (c *Chromosome) Decode() *DecodeResult {
 	c.decoded = &DecodeResult{
 		RawExpression: string(rawExprBuf[:rawExprLen]),
 		Expression:    string(exprBuf[:exprLen]),
-		Validity:      string(validityBuf),
+		Validity:      string(validityBuf[:len(c.genes)]),
 		evaluated:     evaluated,
 		evalErr:       evalErr,
 	}

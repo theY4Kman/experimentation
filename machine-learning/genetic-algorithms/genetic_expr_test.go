@@ -22,6 +22,7 @@ var _ = Describe("Chromosome", func() {
 		func(geneExpr string, expectedValidity string, expectedDecodedExpr string) {
 			params := DefaultSimulationParams()
 			params.ChromosomeSize = len(geneExpr)
+			params.TermMaxDigits = 3
 			sim := NewSimulation(params)
 
 			chromosome, err := sim.EncodeChromosome(geneExpr, true)
@@ -81,9 +82,10 @@ var _ = Describe("Chromosome", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			decoded := chromosome.Decode()
-			result, err := decoded.Evaluate()
+			resultBig, err := decoded.Evaluate()
 			Expect(err).ToNot(HaveOccurred())
 
+			result, _ := resultBig.Float64()
 			Expect(result).To(Equal(expectedResult))
 		},
 
@@ -145,6 +147,30 @@ func BenchmarkSimulation_Run(b *testing.B) {
 	rand.Seed(0)  // use static seed for an inkling of repeatability
 
 	sim := NewSimulation(DefaultSimulationParams())
-	sim.Init(987654321)
+	sim.InitFromInt(987654321)
+	sim.Run()
+}
+
+func BenchmarkSimulation_RunMedium(b *testing.B) {
+	rand.Seed(0)  // use static seed for an inkling of repeatability
+
+	params := DefaultSimulationParams()
+	params.ChromosomeSize = 20
+	params.TermMaxDigits = 3
+
+	sim := NewSimulation(params)
+	sim.InitFromInt(2222222)
+	sim.Run()
+}
+
+func BenchmarkSimulation_RunSmall(b *testing.B) {
+	rand.Seed(0)  // use static seed for an inkling of repeatability
+
+	params := DefaultSimulationParams()
+	params.ChromosomeSize = 20
+	params.TermMaxDigits = 3
+
+	sim := NewSimulation(params)
+	sim.InitFromInt(1111)
 	sim.Run()
 }
