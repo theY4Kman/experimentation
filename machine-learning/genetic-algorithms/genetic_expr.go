@@ -73,6 +73,16 @@ var randPool = sync.Pool{
 	},
 }
 
+var largeFloat, _, _ = big.ParseFloat(strings.Repeat("1234567890", 15), 10, 256, big.ToZero)
+
+// NewFloat creates a new big.Float with a mantissa slice cap of 9
+func NewFloat(prec uint) *big.Float {
+	v := new(big.Float).SetPrec(prec)
+	v.Add(largeFloat, largeFloat)
+	v.SetInt64(0)
+	return v
+}
+
 func init() {
 	geneValuesArray = make([]byte, 1<<GeneBits)
 	ValueGenes = make(map[byte]byte)
@@ -220,6 +230,8 @@ type simulationContext struct {
 
 	// Enables reuse / allocation amortization of buffers/stacks used within Chromosome.Decode
 	decodeStatePool sync.Pool
+
+	bigFloatPool sync.Pool
 }
 
 type decodeState struct {
@@ -305,6 +317,11 @@ func NewSimulation(params *SimulationParams) *Simulation {
 						ops:           newStaticByteStack(params.ChromosomeSize),
 						values:        newStaticBigFloatStack(params.ChromosomeSize, params.FloatPrecision),
 					}
+				},
+			},
+			bigFloatPool: sync.Pool{
+				New: func() interface{} {
+					return NewFloat(params.FloatPrecision)
 				},
 			},
 		},
@@ -576,13 +593,21 @@ func (sim *Simulation) selectChromosomesFromSortedSlice(n int, chromosomes Popul
 func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosomes Population, rng *rand.Rand) []*PopulationMember {
 	selection := make([]*PopulationMember, n)
 
-	// TODO: reuse allocation
-	totalFitness := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
-	pick := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
-	current := big.NewFloat(0).SetPrec(sim.ctx.FloatPrecision)
+	totalFitness := sim.ctx.bigFloatPool.Get().(*big.Float).SetFloat64(0)
+	pick := sim.ctx.bigFloatPool.Get().(*big.Float).SetFloat64(0)
+	current := sim.ctx.bigFloatPool.Get().(*big.Float).SetFloat64(0)
+	// Used in summations to avoid temporary allocations
+	tmp := sim.ctx.bigFloatPool.Get().(*big.Float).SetFloat64(0)
+	defer func() {
+		sim.ctx.bigFloatPool.Put(totalFitness)
+		sim.ctx.bigFloatPool.Put(pick)
+		sim.ctx.bigFloatPool.Put(current)
+		sim.ctx.bigFloatPool.Put(tmp)
+	}()
 
 	for _, chromosome := range chromosomes {
-		totalFitness.Add(totalFitness, chromosome.fitness)
+		tmp.Add(totalFitness, chromosome.fitness)
+		tmp, totalFitness = totalFitness, tmp
 	}
 
 	chooseChromosome := func(selectionIndex int, chromosomeIndex int) {
@@ -596,10 +621,13 @@ func (sim *Simulation) selectChromosomesFromSortedSliceAndRand(n int, chromosome
 nextSelection:
 	for i := 0; i < n; i++ {
 		current.SetFloat64(0)
+		tmp.SetFloat64(0)
 
 		pick.Mul(totalFitness, pick.SetFloat64(rng.Float64()))
 		for k, chromosome := range chromosomes {
-			current.Add(current, chromosome.fitness)
+			tmp.Add(current, chromosome.fitness)
+			tmp, current = current, tmp
+
 			if current.Cmp(pick) > 0 {
 				chooseChromosome(i, k)
 				continue nextSelection
@@ -1210,7 +1238,7 @@ type staticBigFloatStack struct {
 func newStaticBigFloatStack(length int, precision uint) *staticBigFloatStack {
 	pool := make([]*big.Float, length + 1)
 	for i := 0; i < len(pool); i++ {
-		pool[i] = big.NewFloat(0).SetPrec(precision)
+		pool[i] = NewFloat(precision)
 	}
 
 	return &staticBigFloatStack{
@@ -1229,7 +1257,7 @@ func (s *staticBigFloatStack) Checkout() *big.Float {
 		s.poolLength--
 		return s.pool[s.poolLength]
 	} else {
-		return big.NewFloat(0).SetPrec(s.precision)
+		return NewFloat(s.precision)
 	}
 }
 
