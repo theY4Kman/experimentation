@@ -140,7 +140,7 @@ func main() {
 	wasMaxRandomTargetProvided := false
 
 	flag.Var(&BigIntValue{target}, "target", "Solution to search for. A random target will be selected if not provided")
-	flag.Var(&BigIntValue{maxRandomTarget}, "max-random-target", "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default of 2**(precision/2) is used)")
+	flag.Var(&BigIntValue{maxRandomTarget}, "max-random-target", "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default of 2**min(chromosome size, precision/2) is used)")
 
 	params := DefaultSimulationParams()
 	flag.IntVar(&params.ChromosomeSize, "chromosome-size", params.ChromosomeSize, "Number of genes in each chromosome")
@@ -167,6 +167,10 @@ func main() {
 	if !wasTargetProvided {
 		if !wasMaxRandomTargetProvided {
 			baseTwoMaxExponent := params.FloatPrecision / 2
+			if baseTwoMaxExponent > uint(params.ChromosomeSize) {
+				baseTwoMaxExponent = uint(params.ChromosomeSize)
+			}
+
 			maxRandomTarget.SetInt64(2).Exp(maxRandomTarget, big.NewInt(int64(baseTwoMaxExponent)), nil)
 		}
 
