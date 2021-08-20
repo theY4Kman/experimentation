@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2.7
 # Implements a genetic algorithm to find a simple mathematical expression which
 # is equivalent to the solution number. The expression must be of the form:
 #   digit | operator | digit | operator | digit ...

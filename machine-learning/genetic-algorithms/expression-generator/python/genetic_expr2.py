@@ -100,8 +100,7 @@ class Chromosome:
         self.fitness = self.calculate_fitness()
 
     def __repr__(self):
-        return '%s(%r, %r)' % (self.__class__.__name__, self.gene_string,
-                               self.solution)
+        return f'{self.__class__.__name__}({self.gene_string!r}, {self.solution!r})'
 
     def __str__(self):
         return self.gene_string
@@ -200,7 +199,7 @@ class Chromosome:
 class Simulation:
     chromosome_class = Chromosome
 
-    def __init__(self, solution, population_size=30, chromosome_size=30,
+    def __init__(self, solution, population_size=30, chromosome_size=40,
                  crossover_rate=0.8, base_mutation_rate=0.01, max_iterations=1000,
                  verbosity=VERB_NONE):
         self.verbosity = verbosity
@@ -300,10 +299,10 @@ class Simulation:
             b = b.mutate(b_mutation_rate)
 
             if random.random() < a_mutation_rate:
-                a_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier / a_mutation_rate)
+                a_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier)
                 a <<= a_shift
             if random.random() < b_mutation_rate:
-                b_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier / b_mutation_rate)
+                b_shift = int(self.chromosome_class.GENE_SIZE * shift_multiplier)
                 b <<= b_shift
 
             population.append(a)

@@ -63,4 +63,3 @@ def test_decode(gene_expression: str, colors: str, decoded: str):
     expected = (decoded, expected_colors)
     actual = (chromosome.decoded, chromosome.gene_colors)
     assert expected == actual
-

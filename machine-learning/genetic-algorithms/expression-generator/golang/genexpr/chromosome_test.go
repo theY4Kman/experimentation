@@ -1,11 +1,10 @@
-package main
+package genexpr
 
 import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
-	"math/rand"
 	"testing"
 )
 
@@ -13,8 +12,12 @@ func init() {
 	RegisterFailHandler(Fail)
 }
 
+func init() {
+	RegisterFailHandler(Fail)
+}
+
 func Test(t *testing.T) {
-	RunSpecs(t, "Genetic Expressions")
+	RunSpecs(t, "Chromosome")
 }
 
 var _ = Describe("Chromosome", func() {
@@ -142,58 +145,3 @@ var _ = Describe("Chromosome", func() {
 			"11111 11100", "00000 00011"),
 	)
 })
-
-func TestSimulation_Run(t *testing.T) {
-	rand.Seed(0)  // use static seed for an inkling of repeatability
-
-	params := DefaultSimulationParams()
-	params.ChromosomeSize = 50
-	params.TermMaxDigits = 3
-
-	sim := NewSimulation(params)
-	sim.InitFromInt(98765432111)
-
-	sim.Run()
-}
-
-func BenchmarkSimulation_Run(b *testing.B) {
-	rand.Seed(0)  // use static seed for an inkling of repeatability
-
-	params := DefaultSimulationParams()
-	params.ChromosomeSize = 50
-	params.TermMaxDigits = 3
-
-	sim := NewSimulation(params)
-	sim.InitFromInt(9876543210)
-
-	b.ResetTimer()
-	sim.Run()
-}
-
-func BenchmarkSimulation_RunMedium(b *testing.B) {
-	rand.Seed(0)  // use static seed for an inkling of repeatability
-
-	params := DefaultSimulationParams()
-	params.ChromosomeSize = 40
-	params.TermMaxDigits = 3
-
-	sim := NewSimulation(params)
-	sim.InitFromInt(2222222)
-
-	b.ResetTimer()
-	sim.Run()
-}
-
-func BenchmarkSimulation_RunSmall(b *testing.B) {
-	rand.Seed(0)  // use static seed for an inkling of repeatability
-
-	params := DefaultSimulationParams()
-	params.ChromosomeSize = 20
-	params.TermMaxDigits = 3
-
-	sim := NewSimulation(params)
-	sim.InitFromInt(1111)
-
-	b.ResetTimer()
-	sim.Run()
-}
