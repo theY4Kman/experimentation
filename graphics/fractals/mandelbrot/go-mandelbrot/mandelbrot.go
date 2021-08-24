@@ -3,25 +3,21 @@ package main
 import (
 	"fmt"
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"image/color"
 	"log"
 	"math"
+	"sync"
 )
 
 const (
 	screenWidth  = 1024
 	screenHeight = 768
-	aspectRatio = float64(screenWidth) / float64(screenHeight)
 
-	maxIterations = 1000
+	maxIterations = 1_000
 
-	zoomPercent = 0.25
-
-	xZoomPercent = zoomPercent
-	xZoomScale = 1 - xZoomPercent
-	yZoomPercent = xZoomPercent * aspectRatio
-	yZoomScale = 1 - yZoomPercent
+	zoomPercent = 0.1
+	zoomScale = 1 - zoomPercent
 
 	mandelbrotMinX, mandelbrotMaxX = -2.5, 1.0
 	mandelbrotMinY, mandelbrotMaxY = -1.0, 1.0
@@ -48,8 +44,6 @@ func NewGame() *Game {
 			0, mandelbrotMinY - mandelbrotMaxY, mandelbrotMaxY,
 		),
 	}
-	g.canvasImage.Fill(color.Black)
-	g.renderMandelbrot(g.canvasImage)
 	return g
 }
 
@@ -69,80 +63,92 @@ func newGeoM(a, b, tx, c, d, ty float64) ebiten.GeoM {
 }
 
 func (g *Game) Update() error {
-	if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) {
-		g.applyZoom(xZoomScale, yZoomScale, true)
-	} else if inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonRight) {
-		g.applyZoom(1 + xZoomPercent, 1 + yZoomPercent, false)
+	_, scrollY := ebiten.Wheel()
+
+	if scrollY > 0 {
+		scaleFactor := math.Pow(zoomScale, scrollY)
+		g.applyZoom(scaleFactor, scaleFactor)
+	} else if scrollY < 0 {
+		scaleFactor := math.Pow(1 + zoomPercent, -scrollY)
+		g.applyZoom(scaleFactor, scaleFactor)
 	}
 
 	if g.needsRedraw {
+		g.canvasImage.Fill(color.Black)
 		g.renderMandelbrot(g.canvasImage)
+
+		// Draw current mandelbrot x,y bounds
+		x0, y0 := g.scale.Apply(0, 0)
+		x1, y1 := g.scale.Apply(1, 1)
+		ebitenutil.DebugPrint(g.canvasImage, fmt.Sprintf("(%f, %f) to (%f, %f)", x0, y0, x1, y1))
+
+		g.needsRedraw = false
 		g.count++
 	}
 
 	return nil
 }
 
-func (g *Game) applyZoom(xZoomScale, yZoomScale float64, fromMouse bool) {
+func (g *Game) applyZoom(xZoomScale, yZoomScale float64) {
 	var zoomMatrix ebiten.GeoM
 
-	//XXX///////////////////////////////////////////////////////////////////////////////////////////
-	log.Println("Scale before zoom: ", g.scale.String())
+	mouseX, mouseY := ebiten.CursorPosition()
+	mouseXScale := float64(mouseX) / float64(screenWidth)
+	mouseYScale := float64(mouseY) / float64(screenHeight)
 
-	if fromMouse {
-		mouseX, mouseY := ebiten.CursorPosition()
-		mouseXScale := float64(mouseX) / float64(screenWidth)
-		mouseYScale := float64(mouseY) / float64(screenHeight)
+	mouseMX, mouseMY := g.scale.Apply(mouseXScale, mouseYScale)
 
-		zoomMatrix = newGeoM(1, 0, -mouseXScale, 0, 1, -mouseYScale)
-		zoomMatrix.Scale(xZoomScale, yZoomScale)
-		zoomMatrix.Translate(mouseXScale, mouseYScale)
-
-		//XXX///////////////////////////////////////////////////////////////////////////////////////////
-		log.Println("Zooming from mouse: ", zoomMatrix.String())
-	} else {
-		//zoomMatrix = newGeoM(0.5, 0, 0, 0, 0.5, 0)
-		zoomMatrix.Scale(xZoomScale, yZoomScale)
-
-		//XXX///////////////////////////////////////////////////////////////////////////////////////////
-		log.Println("Zooming w/o mouse: ", zoomMatrix.String())
-	}
+	zoomMatrix = newGeoM(1, 0, -mouseMX, 0, 1, -mouseMY)
+	zoomMatrix.Scale(xZoomScale, yZoomScale)
+	zoomMatrix.Translate(mouseMX, mouseMY)
 
 	g.scale.Concat(zoomMatrix)
-
-	//XXX///////////////////////////////////////////////////////////////////////////////////////////
-	log.Println("Zoom result: ", g.scale.String())
-	fmt.Println()
-
 	g.needsRedraw = true
 }
 
 // renderMandelbrot draws the brush on the given canvas image at the position (x, y).
 func (g *Game) renderMandelbrot(canvas *ebiten.Image) {
+	pixels := make([]byte, 4 * screenWidth * screenHeight)
 
-	// Make origin (0,0)
-	//scale.Translate(-scale.Element(0, 0), -scale.Element(1, 0))
+	colorBase := math.Log(float64(maxIterations))
+	colorStep := float64(20)
+	fMaxRawColor := float64(^uint32(0) >> 8)
+
+	wg := sync.WaitGroup{}
 
 	for screenY := 0; screenY < screenHeight; screenY++ {
-		yScale := float64(screenY) / float64(screenHeight)
+		wg.Add(1)
 
-		for screenX := 0; screenX < screenWidth; screenX++ {
-			xScale := float64(screenX) / float64(screenWidth)
+		go func(screenY int) {
+			yScale := float64(screenY) / float64(screenHeight)
 
-			x0, y0 := g.scale.Apply(xScale, yScale)
+			for screenX := 0; screenX < screenWidth; screenX++ {
+				xScale := float64(screenX) / float64(screenWidth)
 
-			i := 0
-			x, y := 0.0, 0.0
-			for ; x*x + y*y < 2*2 && i < maxIterations; i++ {
-				x, y = x*x - y*y + x0, 2*x*y + y0
+				x0, y0 := g.scale.Apply(xScale, yScale)
+
+				i := 0
+				x, y := 0.0, 0.0
+				for ; x*x + y*y < 2*2 && i < maxIterations; i++ {
+					x, y = x*x - y*y + x0, 2*x*y + y0
+				}
+
+				colorScale := math.Log(float64(i)) / colorBase
+				rawColor := uint32(math.Round(fMaxRawColor * colorScale / colorStep) * colorStep)
+
+				pixIndex := 4 * (screenY * screenWidth + screenX)
+				pixels[pixIndex] = byte(rawColor & 0xff)
+				pixels[pixIndex+1] = byte((rawColor >> 8) & 0xff)
+				pixels[pixIndex+2] = byte((rawColor >> 16) & 0xff)
+				pixels[pixIndex+3] = 255
 			}
 
-			colorScale := math.Log(float64(i)) / math.Log(float64(maxIterations))
-
-			clr := color.Gray16{Y: uint16(float64(^uint16(0)) * colorScale)}
-			canvas.Set(screenX, screenY, clr)
-		}
+			wg.Done()
+		}(screenY)
 	}
+
+	wg.Wait()
+	canvas.ReplacePixels(pixels)
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
