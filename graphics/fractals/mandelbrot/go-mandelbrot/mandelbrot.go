@@ -14,7 +14,12 @@ const (
 	screenWidth  = 1024
 	screenHeight = 768
 
-	maxIterations = 1_000
+	maxIterations = 2_500
+
+	colorStep = float64(20.0)
+	fMaxRawColor = float64(^uint32(0) >> 8)
+	fScreenHeight = float64(screenHeight)
+	fScreenWidth = float64(screenWidth)
 
 	zoomPercent = 0.1
 	zoomScale = 1 - zoomPercent
@@ -22,6 +27,19 @@ const (
 	mandelbrotMinX, mandelbrotMaxX = -2.5, 1.0
 	mandelbrotMinY, mandelbrotMaxY = -1.0, 1.0
 )
+
+var (
+	colorBase = math.Log(float64(maxIterations))
+	colors = make([]uint32, maxIterations+1)
+)
+
+func init() {
+	for i := 0; i<len(colors); i++ {
+		colorScale := math.Log(float64(i)) / colorBase
+		rawColor := uint32(math.Round(fMaxRawColor * colorScale / colorStep) * colorStep)
+		colors[i] = rawColor
+	}
+}
 
 type Game struct {
 	count int
@@ -110,31 +128,28 @@ func (g *Game) applyZoom(xZoomScale, yZoomScale float64) {
 func (g *Game) renderMandelbrot(canvas *ebiten.Image) {
 	pixels := make([]byte, 4 * screenWidth * screenHeight)
 
-	colorBase := math.Log(float64(maxIterations))
-	colorStep := float64(20)
-	fMaxRawColor := float64(^uint32(0) >> 8)
-
 	wg := sync.WaitGroup{}
 
 	for screenY := 0; screenY < screenHeight; screenY++ {
 		wg.Add(1)
 
 		go func(screenY int) {
-			yScale := float64(screenY) / float64(screenHeight)
+			yScale := float64(screenY) / fScreenHeight
 
 			for screenX := 0; screenX < screenWidth; screenX++ {
-				xScale := float64(screenX) / float64(screenWidth)
+				xScale := float64(screenX) / fScreenWidth
 
-				x0, y0 := g.scale.Apply(xScale, yScale)
+				r0, i0 := g.scale.Apply(xScale, yScale)
 
-				i := 0
-				x, y := 0.0, 0.0
-				for ; x*x + y*y < 2*2 && i < maxIterations; i++ {
-					x, y = x*x - y*y + x0, 2*x*y + y0
+				numIterations := 0
+
+				offset := complex(r0, i0)
+				n := offset
+				for ; real(n)*real(n) + imag(n)*imag(n) <= 2*2 && numIterations < maxIterations; numIterations++ {
+					n = n*n + offset
 				}
 
-				colorScale := math.Log(float64(i)) / colorBase
-				rawColor := uint32(math.Round(fMaxRawColor * colorScale / colorStep) * colorStep)
+				rawColor := colors[numIterations]
 
 				pixIndex := 4 * (screenY * screenWidth + screenX)
 				pixels[pixIndex] = byte(rawColor & 0xff)
