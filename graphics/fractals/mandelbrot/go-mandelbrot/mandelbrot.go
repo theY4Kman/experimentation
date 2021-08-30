@@ -1,9 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/faiface/pixel"
+	"github.com/faiface/pixel/pixelgl"
+	"github.com/mazznoer/colorgrad"
 	"image/color"
 	"log"
 	"math"
@@ -11,15 +11,10 @@ import (
 )
 
 const (
-	screenWidth  = 1024
-	screenHeight = 768
+	defaultScreenWidth  = 1024
+	defaultScreenHeight = 768
 
-	maxIterations = 2_500
-
-	colorStep = float64(20.0)
-	fMaxRawColor = float64(^uint32(0) >> 8)
-	fScreenHeight = float64(screenHeight)
-	fScreenWidth = float64(screenWidth)
+	maxIterations = 1_500
 
 	zoomPercent = 0.1
 	zoomScale = 1 - zoomPercent
@@ -28,156 +23,196 @@ const (
 	mandelbrotMinY, mandelbrotMaxY = -1.0, 1.0
 )
 
-var (
-	colorBase = math.Log(float64(maxIterations))
-	colors = make([]uint32, maxIterations+1)
-)
-
-func init() {
-	for i := 0; i<len(colors); i++ {
-		colorScale := math.Log(float64(i)) / colorBase
-		rawColor := uint32(math.Round(fMaxRawColor * colorScale / colorStep) * colorStep)
-		colors[i] = rawColor
-	}
-}
-
 type Game struct {
-	count int
+	win *pixelgl.Window
 
-	scale ebiten.GeoM
+	canvas *pixel.PictureData
+	canvasBounds pixel.Rect
+	scale pixel.Matrix
+	grad colorgrad.Gradient
+
+	numRenderWorkers int
+	cancelRender chan struct{}
+	isRendering bool
+	scheduleRenderLock sync.Mutex
 
 	needsRedraw bool
-	canvasImage *ebiten.Image
 }
 
-func NewGame() *Game {
-	g := &Game{
-		canvasImage: ebiten.NewImage(screenWidth, screenHeight),
-		needsRedraw: true,
-
-		// NOTE: as screen X increases, so does our mandelbrot X coord,
-		//		 but as screen Y increases, our mandelbrot Y *decreases*
-		scale: newGeoM(
-			mandelbrotMaxX - mandelbrotMinX, 0, mandelbrotMinX,
-			0, mandelbrotMinY - mandelbrotMaxY, mandelbrotMaxY,
-		),
+func newMatrix(a, b, tx, c, d, ty float64) pixel.Matrix {
+	return pixel.Matrix{
+		0: a, 2: b, 4: tx,
+		1: c, 3: d, 5: ty,
 	}
+}
+
+func NewGame(win *pixelgl.Window) *Game {
+	win.MakePicture(pixel.MakePictureData(win.Bounds()))
+
+	grad, _ := colorgrad.NewGradient().
+		HtmlColors("#000635", "#13399a", "#1360d4", "#ffffff", "#ff7f0e", "#653608", "#000000").
+		Mode(colorgrad.BlendHcl).
+		Domain(0, 2, 10, 30, 100, 200, maxIterations).
+		Build()
+
+	g := &Game{
+		win: win,
+
+		needsRedraw:      false,
+		cancelRender:     make(chan struct{}),
+		numRenderWorkers: 12,
+
+		scale: newMatrix(
+			mandelbrotMaxX-mandelbrotMinX, 0, mandelbrotMinX,
+			0, mandelbrotMaxY-mandelbrotMinY, mandelbrotMinY,
+		),
+		grad: grad,
+	}
+	g.Resize(win.Bounds())
 	return g
 }
 
-// newGeoM initializes a transformation matrix in the form:
-//  [ a  c
-//    b  d
-//    tx ty ]
-func newGeoM(a, b, tx, c, d, ty float64) ebiten.GeoM {
-	outp := ebiten.GeoM{}
-	outp.SetElement(0, 0, a)
-	outp.SetElement(0, 1, b)
-	outp.SetElement(0, 2, tx)
-	outp.SetElement(1, 0, c)
-	outp.SetElement(1, 1, d)
-	outp.SetElement(1, 2, ty)
-	return outp
+func (g *Game) Resize(bounds pixel.Rect) {
+	log.Println("Resized to: ", bounds.String())
+	g.canvas = pixel.MakePictureData(bounds)
+	g.canvasBounds = bounds
 }
 
-func (g *Game) Update() error {
-	_, scrollY := ebiten.Wheel()
+func (g *Game) scheduleRender() {
+	scale := g.scale
 
-	if scrollY > 0 {
-		scaleFactor := math.Pow(zoomScale, scrollY)
-		g.applyZoom(scaleFactor, scaleFactor)
-	} else if scrollY < 0 {
-		scaleFactor := math.Pow(1 + zoomPercent, -scrollY)
-		g.applyZoom(scaleFactor, scaleFactor)
+	g.scheduleRenderLock.Lock()
+	defer g.scheduleRenderLock.Unlock()
+
+	if g.isRendering {
+		g.cancelRender <- struct{}{}
+		<-g.cancelRender
 	}
 
-	if g.needsRedraw {
-		g.canvasImage.Fill(color.Black)
-		g.renderMandelbrot(g.canvasImage)
+	go g.renderMandelbrot(scale, g.canvas, g.canvasBounds)
+}
 
-		// Draw current mandelbrot x,y bounds
-		x0, y0 := g.scale.Apply(0, 0)
-		x1, y1 := g.scale.Apply(1, 1)
-		ebitenutil.DebugPrint(g.canvasImage, fmt.Sprintf("(%f, %f) to (%f, %f)", x0, y0, x1, y1))
-
-		g.needsRedraw = false
-		g.count++
+func (g *Game) Update() {
+	if g.win.Bounds() != g.canvasBounds {
+		g.Resize(g.win.Bounds())
+		g.scheduleRender()
 	}
 
-	return nil
+	scroll := g.win.MouseScroll()
+
+	if scroll.Y > 0 {
+		scaleFactor := math.Pow(zoomScale, scroll.Y)
+		g.applyZoom(scaleFactor, scaleFactor)
+	} else if scroll.Y < 0 {
+		scaleFactor := math.Pow(1 + zoomPercent, -scroll.Y)
+		g.applyZoom(scaleFactor, scaleFactor)
+	}
 }
 
 func (g *Game) applyZoom(xZoomScale, yZoomScale float64) {
-	var zoomMatrix ebiten.GeoM
+	mousePos := g.win.MousePosition()
+	mouseScale := mousePos.ScaledXY(pixel.V(1.0 / g.canvasBounds.Max.X, 1.0 / g.canvasBounds.Max.Y))
+	mouseMandel := g.scale.Project(mouseScale)
 
-	mouseX, mouseY := ebiten.CursorPosition()
-	mouseXScale := float64(mouseX) / float64(screenWidth)
-	mouseYScale := float64(mouseY) / float64(screenHeight)
-
-	mouseMX, mouseMY := g.scale.Apply(mouseXScale, mouseYScale)
-
-	zoomMatrix = newGeoM(1, 0, -mouseMX, 0, 1, -mouseMY)
-	zoomMatrix.Scale(xZoomScale, yZoomScale)
-	zoomMatrix.Translate(mouseMX, mouseMY)
-
-	g.scale.Concat(zoomMatrix)
-	g.needsRedraw = true
+	g.scale = g.scale.ScaledXY(mouseMandel, pixel.V(xZoomScale, yZoomScale))
+	g.scheduleRender()
 }
 
 // renderMandelbrot draws the brush on the given canvas image at the position (x, y).
-func (g *Game) renderMandelbrot(canvas *ebiten.Image) {
-	pixels := make([]byte, 4 * screenWidth * screenHeight)
+func (g *Game) renderMandelbrot(scale pixel.Matrix, canvas *pixel.PictureData, bounds pixel.Rect) {
+	g.isRendering = true
+	defer func() { g.isRendering = false }()
+
+	iScreenWidth := int(bounds.Max.X)
+	iScreenHeight := int(bounds.Max.Y)
 
 	wg := sync.WaitGroup{}
 
-	for screenY := 0; screenY < screenHeight; screenY++ {
-		wg.Add(1)
+	lineWorker := func(yChan <-chan int) {
+		defer wg.Done()
 
-		go func(screenY int) {
-			yScale := float64(screenY) / fScreenHeight
+		for screenY := range yChan {
+			yScale := float64(screenY) / bounds.Max.Y
 
-			for screenX := 0; screenX < screenWidth; screenX++ {
-				xScale := float64(screenX) / fScreenWidth
-
-				r0, i0 := g.scale.Apply(xScale, yScale)
+			for screenX := 0; screenX < iScreenWidth; screenX++ {
+				xScale := float64(screenX) / bounds.Max.X
+				coord := scale.Project(pixel.V(xScale, yScale))
 
 				numIterations := 0
 
-				offset := complex(r0, i0)
+				offset := complex(coord.X, coord.Y)
 				n := offset
 				for ; real(n)*real(n) + imag(n)*imag(n) <= 2*2 && numIterations < maxIterations; numIterations++ {
 					n = n*n + offset
 				}
 
-				rawColor := colors[numIterations]
+				iterColor := g.grad.At(float64(numIterations))
+				red, green, blue := iterColor.RGB255()
 
-				pixIndex := 4 * (screenY * screenWidth + screenX)
-				pixels[pixIndex] = byte(rawColor & 0xff)
-				pixels[pixIndex+1] = byte((rawColor >> 8) & 0xff)
-				pixels[pixIndex+2] = byte((rawColor >> 16) & 0xff)
-				pixels[pixIndex+3] = 255
+				canvas.Pix[screenY * canvas.Stride + screenX] = color.RGBA{R: red, G: green, B: blue, A: 255}
 			}
-
-			wg.Done()
-		}(screenY)
+		}
 	}
 
+	yChan := make(chan int)
+	for i := 0; i < g.numRenderWorkers; i++ {
+		wg.Add(1)
+		go lineWorker(yChan)
+	}
+
+	didCancelRender := false
+
+	lineLoop:
+	for screenY := 0; screenY < iScreenHeight; screenY++ {
+		select {
+		case yChan <- screenY:
+		case <-g.cancelRender:
+			didCancelRender = true
+			break lineLoop
+		}
+	}
+	close(yChan)
+
 	wg.Wait()
-	canvas.ReplacePixels(pixels)
+
+	if didCancelRender {
+		log.Println("Canceled render call")
+		// Inform our canceler that we're done
+		g.cancelRender <- struct{}{}
+	} else {
+		g.needsRedraw = true
+	}
 }
 
-func (g *Game) Draw(screen *ebiten.Image) {
-	screen.DrawImage(g.canvasImage, nil)
-}
+func run() {
+	cfg := pixelgl.WindowConfig{
+		Title: "Mandelbrot Set Viz",
+		Bounds: pixel.R(0, 0, defaultScreenWidth, defaultScreenHeight),
+		VSync: true,
+		Resizable: true,
+	}
+	win, err := pixelgl.NewWindow(cfg)
+	if err != nil {
+		panic(err)
+	}
 
-func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
-	return screenWidth, screenHeight
+	g := NewGame(win)
+	g.scheduleRender()
+
+	for !win.Closed() {
+		g.Update()
+
+		if g.needsRedraw {
+			win.Clear(color.Black)
+			sprite := pixel.NewSprite(g.canvas, g.canvas.Bounds())
+			sprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
+			g.needsRedraw = false
+		}
+
+		win.Update()
+	}
 }
 
 func main() {
-	ebiten.SetWindowSize(screenWidth, screenHeight)
-	ebiten.SetWindowTitle("Mandelbrot Set")
-	if err := ebiten.RunGame(NewGame()); err != nil {
-		log.Fatal(err)
-	}
+	pixelgl.Run(run)
 }
