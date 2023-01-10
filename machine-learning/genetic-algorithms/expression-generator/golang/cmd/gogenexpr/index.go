@@ -32,12 +32,15 @@ func (v BigIntValue) Set(s string) error {
 func main() {
 	rand.Seed(time.Now().Unix())
 
+	useGui := false
+
 	target := new(big.Int)
 	wasTargetProvided := false
 
 	maxRandomTarget := new(big.Int)
 	wasMaxRandomTargetProvided := false
 
+	flag.BoolVar(&useGui, "gui", false, "Use the GUI")
 	flag.Var(&BigIntValue{target}, "target", "Solution to search for. A random target will be selected if not provided")
 	flag.Var(&BigIntValue{maxRandomTarget}, "max-random-target", "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default of 2**min(chromosome size, precision/2) is used)")
 
@@ -63,21 +66,30 @@ func main() {
 		}
 	})
 
-	if !wasTargetProvided {
-		if !wasMaxRandomTargetProvided {
-			baseTwoMaxExponent := params.FloatPrecision / 2
-			if baseTwoMaxExponent > uint(params.ChromosomeSize) {
-				baseTwoMaxExponent = uint(params.ChromosomeSize)
+	getTarget := func() *big.Int {
+		if !wasTargetProvided {
+			if !wasMaxRandomTargetProvided {
+				baseTwoMaxExponent := params.FloatPrecision / 2
+				if baseTwoMaxExponent > uint(params.ChromosomeSize) {
+					baseTwoMaxExponent = uint(params.ChromosomeSize)
+				}
+
+				maxRandomTarget.SetInt64(2).Exp(maxRandomTarget, big.NewInt(int64(baseTwoMaxExponent)), nil)
 			}
 
-			maxRandomTarget.SetInt64(2).Exp(maxRandomTarget, big.NewInt(int64(baseTwoMaxExponent)), nil)
+			rng := rand.New(rand.NewSource(time.Now().Unix()))
+			target.Rand(rng, maxRandomTarget)
 		}
 
-		rng := rand.New(rand.NewSource(time.Now().Unix()))
-		target.Rand(rng, maxRandomTarget)
+		return target
 	}
 
 	sim := genexpr.NewSimulation(params)
-	sim.Init(target)
-	sim.Run()
+	sim.Init(getTarget())
+
+	if useGui {
+		genexpr.GuiMain(sim, getTarget)
+	} else {
+		sim.Run()
+	}
 }

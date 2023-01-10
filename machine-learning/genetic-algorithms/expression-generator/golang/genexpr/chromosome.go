@@ -120,6 +120,7 @@ func (c *Chromosome) VerboseString() string {
 
 	nLSpaces := GeneBits / 2
 	nRSpaces := nLSpaces
+	//goland:noinspection ALL
 	if GeneBits%2 == 0 {
 		nRSpaces--
 	}
@@ -375,7 +376,6 @@ func (c *Chromosome) Decode() *DecodeResult {
 				tok.Indices = tok.Indices[:tok.Len]
 			}
 
-
 			writeBytes(exprBuf, &exprLen, tok.Chars[:tok.Len])
 			validTokens[validTokensLen] = tok
 			validTokensLen++
@@ -444,7 +444,6 @@ func (c *Chromosome) Decode() *DecodeResult {
 			}
 		}
 	}
-
 
 	var evaluated *big.Float = nil
 	if evalErr == nil {

@@ -76,7 +76,7 @@ func DefaultSimulationParams() *SimulationParams {
 	return &SimulationParams{
 		ChromosomeSize: 60,
 
-		TermMaxDigits: -1,
+		TermMaxDigits:  -1,
 		FloatPrecision: 128,
 
 		ImperfectMaxScore:         0.96,
@@ -103,9 +103,15 @@ type Simulation struct {
 
 type Population []*PopulationMember
 
-func (pop Population) Len() int           { return len(pop) }
-func (pop Population) Swap(i, j int)      { pop[i], pop[j] = pop[j], pop[i] }
-func (pop Population) Less(i, j int) bool { return pop[i] != nil && pop[i].fitness.Cmp(pop[j].fitness) < 0 }
+func (pop Population) Len() int {
+	return len(pop)
+}
+func (pop Population) Swap(i, j int) {
+	pop[i], pop[j] = pop[j], pop[i]
+}
+func (pop Population) Less(i, j int) bool {
+	return pop[i] != nil && pop[i].fitness.Cmp(pop[j].fitness) < 0
+}
 
 type PopulationMember struct {
 	c       *Chromosome
@@ -160,6 +166,10 @@ func NewSimulation(params *SimulationParams) *Simulation {
 	}
 
 	return sim
+}
+
+func (sim *Simulation) Params() *SimulationParams {
+	return &sim.ctx.SimulationParams
 }
 
 // InitFromInt creates the initial Population and sets the target from an int
@@ -221,6 +231,10 @@ func (sim *Simulation) calculateFitness(result, evaluated *big.Float, err error)
 	}
 
 	return result
+}
+
+func (sim *Simulation) Target() *big.Float {
+	return sim.target
 }
 
 func (sim *Simulation) Population() Population {
@@ -323,7 +337,7 @@ func (sim *Simulation) iteratePopulation() {
 // as well as periodic mutation rate increases based on iteration
 func (sim *Simulation) nextGeneration() []*Chromosome {
 	generation := make([]*Chromosome, sim.ctx.PopulationSize)
-	sortedChromosomes := sim.getSortedChromosomes()
+	sortedChromosomes := sim.GetSortedPopulation()
 
 	generateChromosomePair := func(i int, rng *rand.Rand) {
 		chromosomes := make(Population, len(sortedChromosomes))
@@ -333,6 +347,11 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 		a, b := aSim.c, bSim.c
 
 		generationMultiplier := 2 - math.Log(float64(sim.iteration%100))/math.Log(100)
+
+		// Every thousand generations, impose a flourishing of mutations
+		if sim.iteration > 1000 && sim.iteration%1000 < 5 {
+			generationMultiplier *= rng.Float64() * 10
+		}
 		shiftMultiplier := generationMultiplier
 
 		mutationRate := sim.ctx.BaseMutationRate*generationMultiplier - rng.Float64()*sim.ctx.BaseMutationRate*generationMultiplier
@@ -404,7 +423,7 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 	return generation
 }
 
-func (sim *Simulation) getSortedChromosomes() Population {
+func (sim *Simulation) GetSortedPopulation() Population {
 	chromosomes := make(Population, len(sim.population))
 	copy(chromosomes, sim.population)
 	sort.Sort(chromosomes)
@@ -412,7 +431,7 @@ func (sim *Simulation) getSortedChromosomes() Population {
 }
 
 func (sim *Simulation) selectChromosomes(n int) []*PopulationMember {
-	return sim.selectChromosomesFromSortedSlice(n, sim.getSortedChromosomes())
+	return sim.selectChromosomesFromSortedSlice(n, sim.GetSortedPopulation())
 }
 
 func (sim *Simulation) selectChromosomesFromSortedSlice(n int, chromosomes Population) []*PopulationMember {
@@ -475,7 +494,7 @@ nextSelection:
 }
 
 func (sim *Simulation) selectChromosomePair() (*PopulationMember, *PopulationMember) {
-	return sim.selectChromosomePairFromSortedSlice(sim.getSortedChromosomes())
+	return sim.selectChromosomePairFromSortedSlice(sim.GetSortedPopulation())
 }
 
 func (sim *Simulation) selectChromosomePairFromSortedSlice(chromosomes Population) (*PopulationMember, *PopulationMember) {
