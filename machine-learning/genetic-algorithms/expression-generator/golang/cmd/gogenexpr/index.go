@@ -40,7 +40,6 @@ func main() {
 	maxRandomTarget := new(big.Int)
 	wasMaxRandomTargetProvided := false
 
-	flag.BoolVar(&useGui, "gui", false, "Use the GUI")
 	flag.Var(&BigIntValue{target}, "target", "Solution to search for. A random target will be selected if not provided")
 	flag.Var(&BigIntValue{maxRandomTarget}, "max-random-target", "If no explicit target is provided, this dictates the maximum value of the randomly-selected target (default of 2**min(chromosome size, precision/2) is used)")
 
@@ -53,7 +52,15 @@ func main() {
 	flag.IntVar(&params.PopulationSize, "population-size", params.PopulationSize, "Number of chromosomes in the population")
 	flag.Float64Var(&params.CrossoverRate, "crossover-rate", params.CrossoverRate, "Rate at which two chromosomes will cross over (have their low/high bits swapped at a random fulcrum)")
 	flag.Float64Var(&params.BaseMutationRate, "base-mutation-rate", params.BaseMutationRate, "Affects the likelihood and rate of mutations and rotations")
+	flag.UintVar(&params.NumStasisGenerations, "num-stasis-generations", params.NumStasisGenerations, "Number of generations to keep the mutation rate generally stable for")
+	flag.UintVar(&params.NumCladogenesisGenerations, "num-cladogenesis-generations", params.NumCladogenesisGenerations, "Number of generations to keep the mutation rate generally stable for")
+	flag.Float64Var(&params.CladogenesisMutationMultiplier, "cladogenesis-mutation-multiplier", params.CladogenesisMutationMultiplier, "Maximum amount the mutation rate will be multiplied by during cladogenesis")
 	flag.IntVar(&params.NumGenerationWorkers, "num-generation-workers", params.NumGenerationWorkers, "Number of goroutines to utilize when creating new population generations. Set to 0 to disable concurrency.")
+
+	guiParams := genexpr.DefaultGuiParams()
+	flag.BoolVar(&useGui, "gui", false, "Use the GUI")
+	flag.UintVar(&guiParams.FramesPerSecond, "gui-fps", guiParams.FramesPerSecond, "Frames per second to render the GUI at")
+	flag.DurationVar(&guiParams.StepDelay, "gui-step-delay", guiParams.StepDelay, "Delay between each step of the simulation when running in GUI mode")
 
 	flag.Parse()
 
@@ -88,7 +95,7 @@ func main() {
 	sim.Init(getTarget())
 
 	if useGui {
-		genexpr.GuiMain(sim, getTarget)
+		genexpr.GuiMain(sim, getTarget, guiParams)
 	} else {
 		sim.Run()
 	}

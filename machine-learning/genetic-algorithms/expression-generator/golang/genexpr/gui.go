@@ -14,14 +14,17 @@ import (
 	g "github.com/AllenDang/giu"
 )
 
-//var sim *Simulation
+var (
+	headerFont         *g.FontInfo
+	chromosomeFontSize float32 = 10
+	chromosomeFont     *g.FontInfo
+)
 
 type colorThreshold struct {
 	threshold float64
 	color     color.Color
 }
 
-var headerFont *g.FontInfo
 var valueColorThresholds = []colorThreshold{
 	{0.0, color.RGBA{R: 255, A: 255}},
 	{0.1, color.RGBA{R: 255, G: 128, A: 255}},
@@ -34,9 +37,24 @@ var maxValueColor = valueColorThresholds[len(valueColorThresholds)-1].color
 
 var numPrinter = message.NewPrinter(language.English)
 
+type GuiParams struct {
+	// Max UI updates to perform per second
+	FramesPerSecond uint
+
+	// Artificial delay to add between Simulation steps
+	StepDelay time.Duration
+}
+
+func DefaultGuiParams() *GuiParams {
+	return &GuiParams{
+		FramesPerSecond: 60,
+		StepDelay:       time.Nanosecond,
+	}
+}
+
 func initFont() {
 	headerFont = g.AddFontFromBytes("gomono.ttf", gomono.TTF, 20)
-	g.SetDefaultFontFromBytes(gomono.TTF, 10)
+	chromosomeFont = g.AddFontFromBytes("gomono.ttf", gomono.TTF, chromosomeFontSize)
 }
 
 func renderChromosome(popMember *PopulationMember, maxResultLen int) g.Widget {
@@ -86,7 +104,7 @@ func renderChromosome(popMember *PopulationMember, maxResultLen int) g.Widget {
 		}
 	}
 
-	return g.Custom(func() {
+	return g.Style().SetFont(chromosomeFont).To(g.Custom(func() {
 		geneLabels := make([]g.Widget, len(c.Genes()))
 
 		geneFmt := fmt.Sprintf("%%0%db", GeneBits)
@@ -121,21 +139,42 @@ func renderChromosome(popMember *PopulationMember, maxResultLen int) g.Widget {
 			),
 		)
 		g.Row(widgets...).Build()
-	})
+	}))
 }
 
-func GuiMain(sim *Simulation, getTarget func() *big.Int) {
+func GuiMain(sim *Simulation, getTarget func() *big.Int, guiParams *GuiParams) {
 	target := sim.Target()
 	fmt.Printf("Target: %f\n", target)
+
+	guiTicker := time.NewTicker(time.Second / time.Duration(guiParams.FramesPerSecond))
+	stepTicker := time.NewTicker(guiParams.StepDelay)
 
 	didSolve := false
 	isPopulationDirty := true
 	stickyMaxResultLen := 0
 	framesSinceStickyMaxResultLenChanged := 0
+	needsWindowResize := true
+
+	var wnd *g.MasterWindow
 
 	loop := func() {
 		var targetInt big.Int
 		target.Int(&targetInt)
+
+		if needsWindowResize {
+			g.PushFont(chromosomeFont)
+			// imgui appears to add padding on the left/right of chars, so we can determine the
+			// *true* width of a char by measuring the size difference between a 1-char and 2-char string
+			oneCharWidth, _ := g.CalcTextSize(" ")
+			twoCharWidth, _ := g.CalcTextSize("  ")
+			charWidth := twoCharWidth - oneCharWidth
+			g.PopFont()
+
+			winWidth, winHeight := calculateWindowSize(charWidth, sim)
+			wnd.SetSize(winWidth, winHeight)
+
+			needsWindowResize = false
+		}
 
 		g.SingleWindow().Layout(
 			g.Row(
@@ -195,18 +234,16 @@ func GuiMain(sim *Simulation, getTarget func() *big.Int) {
 			),
 		)
 	}
-	go func() {
-		guiTick := time.NewTicker(16 * time.Millisecond)
-		stepTick := time.NewTicker(10 * time.Microsecond)
 
+	go func() {
 		for {
 			select {
-			case <-guiTick.C:
+			case <-guiTicker.C:
 				if isPopulationDirty {
 					isPopulationDirty = false
 					g.Update()
 				}
-			case <-stepTick.C:
+			case <-stepTicker.C:
 				if didSolve {
 					continue
 				}
@@ -242,7 +279,8 @@ func GuiMain(sim *Simulation, getTarget func() *big.Int) {
 
 	initFont()
 
-	wnd := g.NewMasterWindow("Genetic Expression Calculator", 2440, sim.Population().Len()*14+100, 0)
+	winWidth, winHeight := calculateWindowSize(chromosomeFontSize, sim)
+	wnd = g.NewMasterWindow("Genetic Expression Calculator", winWidth, winHeight, 0)
 
 	// Avoid "Too many vertices in ImDrawList using 16-bit indices" assertion
 	g.Context.IO().SetBackendFlags(imgui.BackendFlagsRendererHasVtxOffset)
@@ -256,4 +294,14 @@ func GuiMain(sim *Simulation, getTarget func() *big.Int) {
 		}},
 	)
 	wnd.Run(loop)
+}
+
+func calculateWindowSize(charWidth float32, sim *Simulation) (int, int) {
+	chromosomeSize := float32(sim.Params().ChromosomeSize)
+
+	geneWidth := charWidth*float32(GeneBits) + 4
+	chromosomeWidth := geneWidth*chromosomeSize + charWidth*(chromosomeSize-1)
+	maxExprWidth := charWidth * chromosomeSize
+
+	return int(chromosomeWidth + maxExprWidth*1.4 + 100), sim.Population().Len()*14 + 100
 }

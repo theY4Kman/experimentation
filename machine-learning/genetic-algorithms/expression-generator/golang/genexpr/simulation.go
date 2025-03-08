@@ -53,6 +53,17 @@ type SimulationParams struct {
 	// as well as the likelihood each Chromosome will rotate its bits a random amount.
 	BaseMutationRate float64
 
+	// NumStasisGenerations is the number of generations to keep the mutation rate generally stable
+	// for. NumCladogenesisGenerations controls the number of generations to greatly raise the
+	// mutation rate. CladogenesisMutationMultiplier controls the maximum amount the mutation rate
+	// will be multiplied by.
+	//
+	// Periods of stability (stasis) allow the population to converge on a solution, while periods
+	// of rapid mutation (cladogenesis) allow the population to explore new solutions.
+	NumStasisGenerations           uint
+	NumCladogenesisGenerations     uint
+	CladogenesisMutationMultiplier float64
+
 	// Number of workers to utilize when evaluating each Chromosome's expressions
 	// each iteration. Set to 0 to run without goroutines.
 	NumEvaluationWorkers int
@@ -85,6 +96,10 @@ func DefaultSimulationParams() *SimulationParams {
 		PopulationSize:   50,
 		CrossoverRate:    0.8,
 		BaseMutationRate: 0.02,
+
+		NumStasisGenerations:           1024,
+		NumCladogenesisGenerations:     32,
+		CladogenesisMutationMultiplier: 20,
 
 		NumEvaluationWorkers: 0,
 		NumGenerationWorkers: -1,
@@ -348,9 +363,9 @@ func (sim *Simulation) nextGeneration() []*Chromosome {
 
 		generationMultiplier := 2 - math.Log(float64(sim.iteration%100))/math.Log(100)
 
-		// Every thousand generations, impose a flourishing of mutations
-		if sim.iteration > 1000 && sim.iteration%1000 < 5 {
-			generationMultiplier *= rng.Float64() * 10
+		// After a period of stasis, impose a mutation rate increase to induce cladogenesis
+		if sim.iteration > sim.ctx.NumStasisGenerations && sim.iteration%sim.ctx.NumStasisGenerations < sim.ctx.NumCladogenesisGenerations {
+			generationMultiplier *= 1 + rng.Float64()*sim.ctx.CladogenesisMutationMultiplier
 		}
 		shiftMultiplier := generationMultiplier
 
