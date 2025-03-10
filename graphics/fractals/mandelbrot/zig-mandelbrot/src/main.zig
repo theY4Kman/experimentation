@@ -5,19 +5,19 @@ const zm = @import("zm");
 const Complex = @import("std").math.complex.Complex;
 
 var batchpool: j2d.BatchPool(64, false) = undefined;
-var texture: jok.Texture = undefined;
-var pixels: jok.Texture.PixelData = undefined;
+var texture: ?jok.Texture = null;
+var pixels: ?jok.Texture.PixelData = null;
 
 const mandelbrotMin = zm.Vec2{ -2.5, -1.0 };
 const mandelbrotMax = zm.Vec2{ 1.0, 1.0 };
 
 const zoomPercent = 0.1;
 const zoomMultiplier = 1.0 - zoomPercent;
-var userScale = zm.Mat3 {
+var userScale = zm.Mat3{
     .data = .{
-        mandelbrotMax[0] - mandelbrotMin[0], 0.0, mandelbrotMin[0],
-        0.0, mandelbrotMax[1] - mandelbrotMin[1], mandelbrotMin[1],
-        0.0, 0.0, 1.0,
+        mandelbrotMax[0] - mandelbrotMin[0], 0.0,                                 mandelbrotMin[0],
+        0.0,                                 mandelbrotMax[1] - mandelbrotMin[1], mandelbrotMin[1],
+        0.0,                                 0.0,                                 1.0,
     },
 };
 
@@ -36,23 +36,38 @@ fn mat3ScaledXY(mat: zm.Mat3, around: zm.Vec2, scale: zm.Vec2) zm.Mat3 {
         .data = .{
             mat.data[0] * scale[0], mat.data[1] * scale[0], preX * scale[0] + around[0],
             mat.data[3] * scale[1], mat.data[4] * scale[1], preY * scale[1] + around[1],
-            0.0, 0.0, 1.0,
+            0.0,                    0.0,                    1.0,
         },
     };
 }
 
 pub fn init(ctx: jok.Context) !void {
+    ctx.window().setResizable(true);
+
     batchpool = try @TypeOf(batchpool).init(ctx);
-    texture = try ctx.renderer().createTexture(.{ .width = 640, .height = 480 }, null, .{
-        .access = .streaming,
-    });
-    pixels = try texture.createPixelData(ctx.allocator(), null);
+    try resizeTexture(ctx);
 
     try render(ctx);
 }
 
+fn resizeTexture(ctx: jok.Context) !void {
+    const imgSize = getImageSize(ctx);
+
+    if (pixels) |p| {
+        p.destroy();
+    }
+    if (texture) |t| {
+        t.destroy();
+    }
+
+    texture = try ctx.renderer().createTexture(.{ .width = @truncate(imgSize[0]), .height = @truncate(imgSize[1]) }, null, .{
+        .access = .streaming,
+    });
+    pixels = try texture.?.createPixelData(ctx.allocator(), null);
+}
+
 fn getImageSize(ctx: jok.Context) [2]usize {
-    const csz = ctx.cfg().jok_canvas_size orelse jok.Size{ .width = 640, .height = 480 };
+    const csz = ctx.window().getSize();
     return .{
         csz.width,
         csz.height,
@@ -60,23 +75,29 @@ fn getImageSize(ctx: jok.Context) [2]usize {
 }
 
 fn render(ctx: jok.Context) !void {
-    const imgSize = getImageSize(ctx);
+    if (pixels) |p| {
+        if (texture) |t| {
+            try doRender(getImageSize(ctx), p, t);
+        }
+    }
+}
 
+fn doRender(imgSize: [2]usize, p: jok.Texture.PixelData, t: jok.Texture) !void {
     for (0..imgSize[1]) |row| {
         const yScale = @as(f64, @as(f64, @floatFromInt(row))) / @as(f64, @floatFromInt(imgSize[1]));
 
         for (0..imgSize[0]) |col| {
             const xScale = @as(f64, @as(f64, @floatFromInt(col))) / @as(f64, @floatFromInt(imgSize[0]));
-            const point = projectMat3(userScale, zm.Vec2{xScale, yScale});
+            const point = projectMat3(userScale, zm.Vec2{ xScale, yScale });
 
             const escapeCount = escapeTime(Complex(f64){ .re = point[0], .im = point[1] }, 255);
             const intensity: u8 = @truncate(255 - (escapeCount orelse 255));
 
-            pixels.setPixel(@truncate(col), @truncate(row), jok.Color.rgb(intensity, intensity, intensity));
+            p.setPixel(@truncate(col), @truncate(row), jok.Color.rgb(intensity, intensity, intensity));
         }
     }
 
-    try texture.update(pixels);
+    try t.update(p);
 }
 
 fn calculateZoom(ctx: jok.Context, mousePixel: jok.Point, zoomScale: zm.Vec2) zm.Mat3 {
@@ -103,8 +124,14 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
 
             if (scaleFactor) |s| {
                 const mouseState = jok.io.getMouseState();
-                userScale = calculateZoom(ctx, mouseState.pos, zm.vec.scale(zm.Vec2{1.0, 1.0}, s));
+                userScale = calculateZoom(ctx, mouseState.pos, zm.vec.scale(zm.Vec2{ 1.0, 1.0 }, s));
 
+                try render(ctx);
+            }
+        },
+        .window => |window_event| {
+            if (window_event.type == .resized) {
+                try resizeTexture(ctx);
                 try render(ctx);
             }
         },
@@ -118,7 +145,9 @@ pub fn update(ctx: jok.Context) !void {
 }
 
 pub fn draw(ctx: jok.Context) !void {
-    try ctx.renderer().drawTexture(texture, null, null);
+    if (texture) |t| {
+        try ctx.renderer().drawTexture(t, null, null);
+    }
 }
 
 pub fn quit(ctx: jok.Context) void {
@@ -126,10 +155,14 @@ pub fn quit(ctx: jok.Context) void {
     _ = ctx;
 
     batchpool.deinit();
-    pixels.destroy();
-    texture.destroy();
-}
 
+    if (pixels) |p| {
+        p.destroy();
+    }
+    if (texture) |t| {
+        t.destroy();
+    }
+}
 
 // ref: https://www.rdiachenko.com/posts/zig/exploring-ziglang-with-mandelbrot-set/
 fn escapeTime(c: Complex(f64), limit: usize) ?usize {
