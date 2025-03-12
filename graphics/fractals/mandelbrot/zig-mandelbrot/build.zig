@@ -6,20 +6,27 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const zm = b.dependency("zm", .{});
+    const spice = b.dependency("spice", .{});
+
+    const zm_mod = zm.module("zm");
+    const spice_mod = spice.module("spice");
+
     const exe = jok.createDesktopApp(
         b,
-        "Zig Mandelbrot",
+        "zig-mandelbrot",
         "src/main.zig",
         target,
         optimize,
         .{
             .additional_deps = &.{
-                .{ .name = "zm", .mod = zm.module("zm") },
+                .{ .name = "zm", .mod = zm_mod },
+                .{ .name = "spice", .mod = spice_mod },
             },
         },
     );
 
-    exe.root_module.addImport("zm", zm.module("zm"));
+    exe.root_module.addImport("zm", zm_mod);
+    exe.root_module.addImport("spice", spice_mod);
 
     const install_cmd = b.addInstallArtifact(exe, .{});
 

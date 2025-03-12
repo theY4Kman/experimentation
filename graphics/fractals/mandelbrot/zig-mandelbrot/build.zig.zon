@@ -44,6 +44,10 @@
             .url = "git+https://github.com/griush/zm#319a44a9b0859214b9240a5c4ae0d8ae9ac16672",
             .hash = "zm-0.3.0-AAAAAL3MAAA2du9TcSd0z2lFBF5_Qv-0zd7F566Z7B3K",
         },
+        .spice = .{
+            .url = "git+https://github.com/judofyr/spice.git#407c7f660eb1fe4e23cce0fced585a176b7af814",
+            .hash = "spice-0.0.0-3FtxfM67AADgcc5i5rJfewMfbutQY7DMTyNlZblzW-6p",
+        },
     },
     .paths = .{
         "build.zig",
