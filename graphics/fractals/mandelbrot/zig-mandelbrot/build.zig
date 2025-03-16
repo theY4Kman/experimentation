@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
         target,
         optimize,
         .{
+            .no_audio = true,
             .additional_deps = &.{
                 .{ .name = "zm", .mod = zm_mod },
                 .{ .name = "spice", .mod = spice_mod },
@@ -35,4 +36,23 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run game");
     run_step.dependOn(&run_cmd.step);
+
+    const tests = jok.createTest(
+        b,
+        "zig-mandelbrot",
+        "src/main.zig",
+        target,
+        optimize,
+        .{
+            .additional_deps = &.{
+                .{ .name = "zm", .mod = zm_mod },
+                .{ .name = "spice", .mod = spice_mod },
+            },
+        },
+    );
+
+    const run_tests = b.addRunArtifact(tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_tests.step);
 }
