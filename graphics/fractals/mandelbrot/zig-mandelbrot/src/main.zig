@@ -31,7 +31,7 @@ const mandelbrotMax = mt.Vec2{ 1.0, 1.0 };
 const MAX_ITERATIONS = 1024;
 const RENDER_WORKER_BATCH_SIZE: u32 = 1<<14;
 const RENDER_WORKER_RECT_BATCH_AREA: u32 = 3184;
-const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 1;
+const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
@@ -385,9 +385,18 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
             return;
         } else {
             if (bigRect) |rect| {
-                params.rects.append(rect) catch |err| {
-                    std.debug.print("Error appending bigRect: {}\n", .{err});
-                };
+                if (rect.area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                    const chunkA, const chunkB = rect.split();
+                    params.rects.appendSlice(&.{ chunkA, chunkB }) catch |err| {
+                        std.debug.print("Error splitting bigParams: {}\n", .{err});
+                        std.debug.assert(bigParams.rects.capacity >= 1);
+                        params.rects.append(rect) catch unreachable;
+                    };
+                } else {
+                    params.rects.append(rect) catch |err| {
+                        std.debug.print("Error appending bigRect: {}\n", .{err});
+                    };
+                }
                 bigParams.deinit();
             }
         }
