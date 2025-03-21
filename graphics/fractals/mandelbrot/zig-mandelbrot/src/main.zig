@@ -478,6 +478,12 @@ fn calculateZoom(mousePixel: jok.Point, zoomScale: mt.Vec2) mt.Mat3 {
     return mat3ScaledXY(userScale, mousePoint, zoomScale);
 }
 
+fn calculateCenterZoom(zoomScale: mt.Vec2) mt.Mat3 {
+    const mouseScale = mt.Vec2{ 0.5, 0.5 };
+    const centerPoint = projectMat3(userScale, mouseScale);
+    return mat3ScaledXY(userScale, centerPoint, zoomScale);
+}
+
 pub fn event(ctx: jok.Context, e: jok.Event) !void {
     switch (e) {
         .mouse_wheel => |mouse_event| {
@@ -493,9 +499,32 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
                 userScale = calculateZoom(mouseState.pos, zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, s));
                 totalZoom += mouse_event.delta_y;
 
-                std.debug.print("{d} — ({d:6.7},{d:6.7}) to ({d:6.7},{d:6.7})\n", .{ totalZoom, userScale.data[2], userScale.data[5], userScale.data[0] + userScale.data[2], userScale.data[4] + userScale.data[5] });
-
-                try render(ctx);
+                try onScaleChanged(ctx);
+            }
+        },
+        .key_up => |key_event| {
+            switch (key_event.keycode) {
+                .r => {
+                    userScale = baseScale;
+                    totalZoom = 0;
+                    try onScaleChanged(ctx);
+                },
+                .plus,
+                .equals => {
+                    userScale = calculateCenterZoom(zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, zoomMultiplier));
+                    totalZoom += 1;
+                    try onScaleChanged(ctx);
+                },
+                .minus => {
+                    userScale = calculateCenterZoom(zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, 1.0 + zoomPercent));
+                    totalZoom -= 1;
+                    try onScaleChanged(ctx);
+                },
+                .f5 => {
+                    // force re-render
+                    try render(ctx);
+                },
+                else => {},
             }
         },
         .window => |window_event| {
@@ -507,6 +536,11 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
         },
         else => {},
     }
+}
+
+fn onScaleChanged(ctx: jok.Context) !void {
+    std.debug.print("{d} — ({d:6.7},{d:6.7}) to ({d:6.7},{d:6.7})\n", .{ totalZoom, userScale.data[2], userScale.data[5], userScale.data[0] + userScale.data[2], userScale.data[4] + userScale.data[5] });
+    try render(ctx);
 }
 
 pub fn update(ctx: jok.Context) !void {
