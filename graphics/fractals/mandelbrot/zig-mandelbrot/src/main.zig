@@ -5,7 +5,10 @@ const sdl = jok.sdl;
 const j2d = jok.j2d;
 const zm = @import("zm");
 const spice = @import("spice");
-const mt = @import("math.zig").MathTypes(f64);
+
+const ourMath = @import("math.zig");
+const mt = ourMath.MathTypes(f64);
+const u32Rectangle = ourMath.u32Rectangle;
 const ColorGradient = @import("color.zig").ColorGradient;
 
 var allocator: std.mem.Allocator = undefined;
@@ -26,20 +29,16 @@ const mandelbrotMin = mt.Vec2{ -2.5, -1.0 };
 const mandelbrotMax = mt.Vec2{ 1.0, 1.0 };
 
 const MAX_ITERATIONS = 1024;
-const RENDER_WORKER_BATCH_SIZE: u32 = 1<<11;
+const RENDER_WORKER_BATCH_SIZE: u32 = 1<<14;
+const RENDER_WORKER_RECT_BATCH_AREA: u32 = 3184;
+const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 1;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
-        // NB(zk): original colours from go-mandelbrot
-        // .{@intFromFloat(0.0000 * MAX_ITERATIONS), "#000635"},
-        // .{@intFromFloat(0.0078 * MAX_ITERATIONS), "#13399a"},
-        // .{@intFromFloat(0.0392 * MAX_ITERATIONS), "#1360d4"},
-        // .{@intFromFloat(0.1176 * MAX_ITERATIONS), "#ffffff"},
-        // .{@intFromFloat(0.3921 * MAX_ITERATIONS), "#ff7f0e"},
-        // .{@intFromFloat(0.7843 * MAX_ITERATIONS), "#653608"},
-        // .{MAX_ITERATIONS, "#000000"},
-
+        .{@intFromFloat(0.0000 * MAX_ITERATIONS), "#000635"},
         .{@intFromFloat(0.0000 * MAX_ITERATIONS), "#000764"},
+        .{@intFromFloat(0.0078 * MAX_ITERATIONS), "#13399a"},
+        .{@intFromFloat(0.0392 * MAX_ITERATIONS), "#1360d4"},
         .{@intFromFloat(0.1600 * MAX_ITERATIONS), "#206bcb"},
         .{@intFromFloat(0.4200 * MAX_ITERATIONS), "#edffff"},
         .{@intFromFloat(0.6425 * MAX_ITERATIONS), "#ffaa00"},
@@ -128,12 +127,11 @@ const RowCol = struct {
     col: u32,
 };
 
-const RenderWorkerParams = struct {
-    /// Index of pixel to start rendering from
-    from: u32,
+const RectArrayList = std.ArrayList(u32Rectangle);
 
-    /// Index of pixel to stop rendering at
-    to: u32,
+const RenderWorkerRectParams = struct {
+    /// Rectangles the worker is managing
+    rects: RectArrayList,
 
     /// Width of the image
     width: u32,
@@ -144,65 +142,83 @@ const RenderWorkerParams = struct {
     /// Transform matrix (converts ratios between 0.0 and 1.0 to coords in the Mandelbrot set)
     scale: mt.Mat3,
 
-    inline fn size(self: RenderWorkerParams) u32 {
-        return self.to - self.from;
+    pub inline fn allocator(self: RenderWorkerRectParams) *const std.mem.Allocator {
+        return &self.rects.allocator;
     }
 
-    inline fn middle(self: RenderWorkerParams) u32 {
-        return (self.from + self.to) / 2;
+    pub inline fn numRects(self: RenderWorkerRectParams) u64 {
+        return self.rects.items.len;
     }
 
-    fn splitHigh(self: *RenderWorkerParams) ?RenderWorkerParams {
-        if (self.from + RENDER_WORKER_BATCH_SIZE >= self.to) {
-            return null;
-        }
+    pub inline fn isEmpty(self: RenderWorkerRectParams) bool {
+        return self.numRects() == 0;
+    }
 
-        const origTo = self.to;
-        self.to = self.middle();
+    pub fn deinit(self: RenderWorkerRectParams) void {
+        self.rects.deinit();
+    }
 
-        return RenderWorkerParams{
-            .from = self.to,
-            .to = origTo,
+    pub fn forkChild(self: *RenderWorkerRectParams, rect: u32Rectangle) !RenderWorkerRectParams {
+        var rects = try RectArrayList.initCapacity(self.rects.allocator, 1);
+        try rects.append(rect);
+        return RenderWorkerRectParams{
+            .rects = rects,
             .width = self.width,
             .height = self.height,
             .scale = self.scale,
         };
     }
 
-    fn splitLowBatch(self: *RenderWorkerParams) ?RenderWorkerParams {
-        if (self.from + RENDER_WORKER_BATCH_SIZE >= self.to) {
-            return null;
+    fn _rectIsLessThan(_: void, lhs: ?u32Rectangle, rhs: ?u32Rectangle) bool {
+        if (lhs == null) return false;
+        if (rhs == null) return true;
+
+        return lhs.?.area() < rhs.?.area();
+    }
+
+    pub fn popBatch(self: *RenderWorkerRectParams) []u32Rectangle {
+        if (self.isEmpty()) {
+            return &.{};
         }
 
-        const origFrom = self.from;
-        self.from += RENDER_WORKER_BATCH_SIZE;
+        var batch: [3]?u32Rectangle = .{ null, null, null };
+        var i: usize = 0;
+        while (i < 3) {
+            if (self.rects.pop()) |rect| {
+                if (rect.area() > 0) {
+                    batch[i] = rect;
+                    i += 1;
+                }
+            } else {
+                break;
+            }
+        }
 
-        return RenderWorkerParams{
-            .from = origFrom,
-            .to = self.from,
-            .width = self.width,
-            .height = self.height,
-            .scale = self.scale,
-        };
-    }
+        if (batch[0] == null) {
+            return &.{};
+        }
 
-    inline fn projectIndex(self: RenderWorkerParams, index: u32) mt.Complex {
-        const rowCol = self.indexToRowCol(index);
-        return self.projectRowCol(rowCol);
-    }
+        std.mem.sort(?u32Rectangle, &batch, {}, _rectIsLessThan);
 
-    inline fn projectRowCol(self: RenderWorkerParams, rowCol: RowCol) mt.Complex {
-        const xScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol.col))) / @as(mt.Float, @floatFromInt(self.width));
-        const yScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol.row))) / @as(mt.Float, @floatFromInt(self.height));
-        const vec = projectMat3(self.scale, mt.Vec2{ xScale, yScale });
-        return mt.Complex{ .re = vec[0], .im = vec[1] };
-    }
+        if (batch[1] == null and batch[0].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
+            batch[0], batch[1] = batch[0].?.split();
+        }
 
-    inline fn indexToRowCol(self: RenderWorkerParams, index: u32) RowCol {
-        return RowCol{
-            .row = index / self.width,
-            .col = index % self.width,
-        };
+        if (batch[2] == null) {
+            if (batch[1] != null and batch[1].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                batch[1], batch[2] = batch[1].?.split();
+            } else if (batch[0].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                batch[0], batch[2] = batch[0].?.split();
+            }
+        }
+
+        if (batch[1] == null) {
+            return self.allocator().dupe(u32Rectangle, &.{ batch[0].? }) catch  &.{};
+        } else if (batch[2] == null) {
+            return self.allocator().dupe(u32Rectangle, &.{ batch[0].?, batch[1].? }) catch  &.{};
+        } else {
+            return self.allocator().dupe(u32Rectangle, &.{ batch[0].?, batch[1].?, batch[2].? }) catch  &.{};
+        }
     }
 };
 
@@ -211,7 +227,8 @@ fn renderWorker(ctx: jok.Context) !void {
 
     thread_pool = spice.ThreadPool.init(allocator);
     thread_pool.start(.{
-        .background_worker_count = 16,
+        .background_worker_count = 24,
+        .heartbeat_interval = 10 * std.time.ns_per_us,
     });
 
     while (!render_thread_canceled) {
@@ -222,82 +239,203 @@ fn renderWorker(ctx: jok.Context) !void {
             return;
         }
 
-        doRenderParallel();
+        doRenderParallel() catch |err| {
+            // handle error
+            std.debug.print("Render error: {}\n", .{err});
+            continue;
+        };
     }
 }
 
-fn doRenderParallel() void {
+fn doRenderParallel() !void {
     pixels_mutex.lock();
     defer pixels_mutex.unlock();
 
-    var params = RenderWorkerParams{
-        .from = 0,
-        .to = window_size.width * window_size.height,
+    const buffer: []u8 = @ptrCast(try allocator.alloc(
+        u32Rectangle,
+        (window_size.width * window_size.height / RENDER_WORKER_RECT_BATCH_AREA) * 6),
+    );
+    defer allocator.free(buffer);
+
+    var fba = std.heap.FixedBufferAllocator.init(buffer);
+
+    var params = RenderWorkerRectParams{
+        .rects = RectArrayList.init(fba.allocator()),
         .width = window_size.width,
         .height = window_size.height,
         .scale = userScale,
     };
+    try params.rects.append(u32Rectangle {
+        .x = 0,
+        .y = 0,
+        .width = window_size.width,
+        .height = window_size.height,
+    });
 
     thread_pool.call(void, doRenderParallelWorker, &params);
 }
 
-const RenderWorkerFuture = spice.Future(*RenderWorkerParams, void);
+const RenderWorkerRectFuture = spice.Future(*RenderWorkerRectParams, void);
 
+fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void {
+    while (!params.isEmpty()) {
+        const batch = params.popBatch();
+        if (batch.len == 0) {
+            return;
+        }
+        defer params.allocator().free(batch);
 
-fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerParams) void {
-    const origTo = params.to;
+        var smallRect: u32Rectangle = batch[0];
 
-    while (params.from < params.to) {
-        var highFut = RenderWorkerFuture.init();
-        var highParams: RenderWorkerParams = undefined;
+        var hasBigBatch = false;
+        var bigParams: RenderWorkerRectParams = undefined;
+        var bigRect: ?u32Rectangle = null;
+        var bigFut = RenderWorkerRectFuture.init();
 
-        var hasBatch1 = false;
-        var batch1Fut: RenderWorkerFuture = RenderWorkerFuture.init();
-        var batch1Params: RenderWorkerParams = undefined;
+        var hasMedBatch = false;
+        var medRect: ?u32Rectangle = null;
+        var medParams: RenderWorkerRectParams = undefined;
+        var medFut = RenderWorkerRectFuture.init();
 
-        if (params.splitHigh()) |next| {
-            highParams = next;
-            highFut.fork(t, doRenderParallelWorker, &highParams);
+        if (batch.len > 1) {
+            smallRect = batch[1];
+            medRect = batch[0];
+            hasMedBatch = true;
         }
 
-        if (params.splitLowBatch()) |batch| {
-            hasBatch1 = true;
-            batch1Params = batch;
-            batch1Fut.fork(t, doRenderParallelWorker, &batch1Params);
+        if (batch.len > 2) {
+            smallRect = batch[2];
+            medRect = batch[1];
+            bigRect = batch[0];
+            hasBigBatch = true;
         }
 
-        const endIndex = @min(params.to, params.from + RENDER_WORKER_BATCH_SIZE);
-        while (params.from < endIndex) : (params.from += 1) {
-            const rowCol = params.indexToRowCol(params.from);
-            const point = params.projectRowCol(rowCol);
-            const escapeCount = t.call(?usize, calculateEscapeCount, point) orelse MAX_ITERATIONS;
-
-            const smoothed = std.math.log2(std.math.log2(point.squaredMagnitude() + 1.0) / 2.0);
-            const colorIdxf = std.math.sqrt(@as(mt.Float, @floatFromInt(escapeCount)) + 10.0 - smoothed) * @as(mt.Float, @floatFromInt(MAX_ITERATIONS));
-            const colorIdx = @as(usize, @intFromFloat(colorIdxf)) % MAX_ITERATIONS;
-            pixels.?.setPixel(rowCol.col, rowCol.row, colorGrad.at(colorIdx));
+        if (bigRect) |rect| {
+            bigParams = params.forkChild(rect) catch |err| {
+                std.debug.print("Error forking bigParams: {}\n", .{err});
+                return;
+            };
+            bigFut.fork(t, doRenderParallelWorker, &bigParams);
         }
 
-        if (hasBatch1 and (batch1Fut.tryJoin(t) == null)) {
-            t.call(void, doRenderParallelWorker, &batch1Params);
+        if (medRect) |rect| {
+            medParams = params.forkChild(rect) catch |err| {
+                std.debug.print("Error forking medParams: {}\n", .{err});
+                return;
+            };
+            medFut.fork(t, doRenderParallelWorker, &medParams);
         }
 
-        if (highFut.tryJoin(t)) |_| {
+        if (smallRect.area() > RENDER_WORKER_RECT_BATCH_AREA) {
+            if (!fillRect(
+                params.width,
+                params.height,
+                params.scale,
+                &smallRect,
+                RENDER_WORKER_RECT_BATCH_SHRINK_STEP,
+            )) {
+                var smallParams = params.forkChild(smallRect) catch |err| {
+                    std.debug.print("Error forking smallParams: {}\n", .{err});
+                    return;
+                };
+                t.call(void, doRenderParallelWorker, &smallParams);
+            }
+        } else {
+            t.tick();
+            _ = fillRect(
+                params.width,
+                params.height,
+                params.scale,
+                &smallRect,
+                null,
+            );
+            t.tick();
+        }
+
+        if (hasMedBatch) {
+            if (medFut.join(t) == null) {
+                t.call(void, doRenderParallelWorker, &medParams);
+            }
+            medParams.deinit();
+        }
+
+        if (bigFut.tryJoin(t)) |_| {
             t.call(void, doRenderParallelWorker, params);
             return;
         } else {
-            params.to = origTo;
+            if (bigRect) |rect| {
+                params.rects.append(rect) catch |err| {
+                    std.debug.print("Error appending bigRect: {}\n", .{err});
+                };
+                bigParams.deinit();
+            }
         }
     }
+
+    params.deinit();
 }
 
-inline fn cast(comptime T: type, value: anytype) T {
-    return @intCast(value);
+/// Fill a rectangle with the Mandelbrot set, using the given scale and max_shrink
+/// Returns true if the rectangle was completely filled with a single color.
+fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_shrink: ?u32) bool {
+    var i: u32 = 0;
+    while (rect.area() > 0) : (i += 1) {
+        if (max_shrink) |m| {
+            if (i >= m) {
+                break;
+            }
+        }
+
+        var initialEscapeCount: ?usize = null;
+        var areBordersHomogeneous = true;
+
+        var borderIter = rect.iterateBorders();
+        while (borderIter.next()) |rowCol| {
+            const point = pointFromRowCol(rowCol, width, height, scale);
+            const escapeCount = escapeTime(point, MAX_ITERATIONS) orelse MAX_ITERATIONS;
+
+            if (initialEscapeCount == null) {
+                initialEscapeCount = escapeCount;
+            } else if (initialEscapeCount != escapeCount) {
+                areBordersHomogeneous = false;
+            }
+
+            const color = pointColor(point, escapeCount);
+            pixels.?.setPixel(rowCol[0], rowCol[1], color);
+        }
+
+        rect.* = rect.shrink(1);
+
+        if (areBordersHomogeneous) {
+            var y: u32 = rect.y;
+            while (y < (rect.y + rect.height)) : (y += 1) {
+                var x: u32 = rect.x;
+                while (x < (rect.x + rect.width)) : (x += 1) {
+                    const rowCol = @Vector(2, u32){ x, y };
+                    const point = pointFromRowCol(rowCol, width, height, scale);
+                    const color = pointColor(point, initialEscapeCount.?);
+                    pixels.?.setPixel(rowCol[0], rowCol[1], color);
+                }
+            }
+            return true;
+        }
+    }
+
+    return rect.area() <= 0; // return true if we filled the rectangle completely
 }
 
-fn calculateEscapeCount(t: *spice.Task, point: mt.Complex) ?usize {
-    _ = t;
-    return escapeTime(point, MAX_ITERATIONS);
+inline fn pointFromRowCol(rowCol: @Vector(2, u32), width: u32, height: u32, scale: mt.Mat3) mt.Complex {
+    const xScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol[0]))) / @as(mt.Float, @floatFromInt(width));
+    const yScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol[1]))) / @as(mt.Float, @floatFromInt(height));
+    const vec = projectMat3(scale, mt.Vec2{ xScale, yScale });
+    return mt.Complex{ .re = vec[0], .im = vec[1] };
+}
+
+inline fn pointColor(point: mt.Complex, escapeCount: usize) jok.Color {
+    const smoothed = std.math.log2(std.math.log2(point.squaredMagnitude() + 1.0) / 2.0);
+    const colorIdxf = std.math.sqrt(@as(mt.Float, @floatFromInt(escapeCount)) + 10.0 - smoothed) * @as(mt.Float, @floatFromInt(MAX_ITERATIONS));
+    const colorIdx = @as(usize, @intFromFloat(colorIdxf)) % MAX_ITERATIONS;
+    return colorGrad.at(colorIdx);
 }
 
 fn calculateZoom(mousePixel: jok.Point, zoomScale: mt.Vec2) mt.Mat3 {
@@ -325,10 +463,7 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
                 userScale = calculateZoom(mouseState.pos, zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, s));
                 totalZoom += mouse_event.delta_y;
 
-                //XXX///////////////////////////////////////////////////////////////////////////////////////////
-                //XXX///////////////////////////////////////////////////////////////////////////////////////////
-                std.debug.print("{d} — ({d:6.5},{d:6.5}) to ({d:6.5},{d:6.5})\n", .{ totalZoom, userScale.data[2], userScale.data[5], userScale.data[0] + userScale.data[2], userScale.data[4] + userScale.data[5] });
-                //XXX///////////////////////////////////////////////////////////////////////////////////////////
+                std.debug.print("{d} — ({d:6.7},{d:6.7}) to ({d:6.7},{d:6.7})\n", .{ totalZoom, userScale.data[2], userScale.data[5], userScale.data[0] + userScale.data[2], userScale.data[4] + userScale.data[5] });
 
                 try render(ctx);
             }
