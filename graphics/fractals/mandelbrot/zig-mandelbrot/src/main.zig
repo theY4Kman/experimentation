@@ -540,10 +540,15 @@ pub fn quit(ctx: jok.Context) void {
 fn escapeTime(c: mt.Complex, limit: usize) ?usize {
     var z = c;
     for (0..limit) |i| {
-        if (z.squaredMagnitude() > 4.0) {
+        const zRe2 = z.re * z.re;
+        const zIm2 = z.im * z.im;
+        if ((zRe2 + zIm2) > 4.0) {
             return i;
         }
-        z = z.mul(z).add(c);
+        z = mt.Complex {
+            .re = zRe2 - zIm2 + c.re,
+            .im = 2.0 * z.re * z.im + c.im,
+        };
     }
     return null;
 }
