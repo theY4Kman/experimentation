@@ -66,26 +66,26 @@ fn _ColorGradient(comptime Domain: type, comptime N: usize) type {
             var lowDomain = self.domain[0];
 
             if (value <= lowDomain) {
-                return lowHSL;
+                return jok.Color.fromHSL(lowHSL);
             }
 
             var highHSL = lowHSL;
             var highDomain = lowDomain;
 
-            for (self.colors, self.domain) |color, domain| {
+            for (self.colorsHSL, self.domain) |colorHSL, domain| {
                 lowHSL = highHSL;
                 lowDomain = highDomain;
 
-                highHSL = color;
+                highHSL = colorHSL;
                 highDomain = domain;
 
                 if (value < domain) {
                     break;
                 } else if (value == domain) {
-                    return color;
+                    return jok.Color.fromHSL(colorHSL);
                 }
             } else {
-                return highHSL;
+                return jok.Color.fromHSL(highHSL);
             }
 
             const range = highDomain - lowDomain;
