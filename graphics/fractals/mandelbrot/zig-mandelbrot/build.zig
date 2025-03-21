@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
 
     const tests = jok.createTest(
         b,
-        "zig-mandelbrot",
+        "test",
         "src/main.zig",
         target,
         optimize,
@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
             },
         },
     );
+    b.installArtifact(tests);
 
     const run_tests = b.addRunArtifact(tests);
 
