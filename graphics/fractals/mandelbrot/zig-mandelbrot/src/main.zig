@@ -169,6 +169,17 @@ const RenderWorkerRectParams = struct {
         };
     }
 
+    pub fn forkChildren(self: *RenderWorkerRectParams, rects: []const u32Rectangle) !RenderWorkerRectParams {
+        var rectsList = try RectArrayList.initCapacity(self.rects.allocator, rects.len);
+        try rectsList.appendSlice(rects);
+        return RenderWorkerRectParams{
+            .rects = rectsList,
+            .width = self.width,
+            .height = self.height,
+            .scale = self.scale,
+        };
+    }
+
     fn _rectIsLessThan(_: void, lhs: ?u32Rectangle, rhs: ?u32Rectangle) bool {
         if (lhs == null) return false;
         if (rhs == null) return true;
@@ -253,7 +264,7 @@ fn doRenderParallel() !void {
 
     const buffer: []u8 = @ptrCast(try allocator.alloc(
         u32Rectangle,
-        (window_size.width * window_size.height / RENDER_WORKER_RECT_BATCH_AREA) * 6),
+        (window_size.width * window_size.height / RENDER_WORKER_RECT_BATCH_AREA) * 10),
     );
     defer allocator.free(buffer);
 
@@ -334,7 +345,8 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
                 &smallRect,
                 RENDER_WORKER_RECT_BATCH_SHRINK_STEP,
             )) {
-                var smallParams = params.forkChild(smallRect) catch |err| {
+                const chunkA, const chunkB = smallRect.split();
+                var smallParams = params.forkChildren(&.{ chunkA, chunkB }) catch |err| {
                     std.debug.print("Error forking smallParams: {}\n", .{err});
                     return;
                 };
@@ -354,6 +366,15 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
 
         if (hasMedBatch) {
             if (medFut.join(t) == null) {
+                if (medParams.rects.items[0].area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                    const rect = medParams.rects.pop().?;
+                    const chunkA, const chunkB = rect.split();
+                    medParams.rects.appendSlice(&.{ chunkA, chunkB }) catch |err| {
+                        std.debug.print("Error splitting medParams: {}\n", .{err});
+                        std.debug.assert(medParams.rects.capacity >= 1);
+                        medParams.rects.append(rect) catch unreachable;
+                    };
+                }
                 t.call(void, doRenderParallelWorker, &medParams);
             }
             medParams.deinit();
