@@ -377,7 +377,6 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
                 }
                 t.call(void, doRenderParallelWorker, &medParams);
             }
-            medParams.deinit();
         }
 
         if (bigFut.tryJoin(t)) |_| {
