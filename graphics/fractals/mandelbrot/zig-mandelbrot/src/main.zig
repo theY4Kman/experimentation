@@ -29,20 +29,19 @@ const mandelbrotMin = mt.Vec2{ -2.5, -1.0 };
 const mandelbrotMax = mt.Vec2{ 1.0, 1.0 };
 
 const MAX_ITERATIONS = 1024;
-const RENDER_WORKER_BATCH_SIZE: u32 = 1<<14;
-const RENDER_WORKER_RECT_BATCH_AREA: u32 = 3184;
+const RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
 const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
-        .{@intFromFloat(0.0000 * MAX_ITERATIONS), "#000635"},
-        .{@intFromFloat(0.0000 * MAX_ITERATIONS), "#000764"},
-        .{@intFromFloat(0.0078 * MAX_ITERATIONS), "#13399a"},
-        .{@intFromFloat(0.0392 * MAX_ITERATIONS), "#1360d4"},
-        .{@intFromFloat(0.1600 * MAX_ITERATIONS), "#206bcb"},
-        .{@intFromFloat(0.4200 * MAX_ITERATIONS), "#edffff"},
-        .{@intFromFloat(0.6425 * MAX_ITERATIONS), "#ffaa00"},
-        .{@intFromFloat(0.8575 * MAX_ITERATIONS), "#000200"},
+        .{ @intFromFloat(0.0000 * MAX_ITERATIONS), "#000635" },
+        .{ @intFromFloat(0.0002 * MAX_ITERATIONS), "#000764" },
+        .{ @intFromFloat(0.0078 * MAX_ITERATIONS), "#13399a" },
+        .{ @intFromFloat(0.0392 * MAX_ITERATIONS), "#1360d4" },
+        .{ @intFromFloat(0.1600 * MAX_ITERATIONS), "#206bcb" },
+        .{ @intFromFloat(0.4200 * MAX_ITERATIONS), "#edffff" },
+        .{ @intFromFloat(0.6425 * MAX_ITERATIONS), "#ffaa00" },
+        .{ @intFromFloat(0.8575 * MAX_ITERATIONS), "#000200" },
     },
 ) catch ColorGradient(u8).GREYSCALE;
 var colorGrad = baseColorGrad.compute(2048);
@@ -88,7 +87,7 @@ pub fn init(ctx: jok.Context) !void {
     window.setResizable(true);
     window_size = ctx.window().getSize();
 
-    render_thread = try std.Thread.spawn(.{}, renderWorker, .{ ctx });
+    render_thread = try std.Thread.spawn(.{}, renderWorker, .{ctx});
 
     batchpool = try @TypeOf(batchpool).init(ctx);
     try resizeTexture(ctx);
@@ -160,7 +159,7 @@ const RenderWorkerRectParams = struct {
 
     pub fn forkChild(self: *RenderWorkerRectParams, rect: u32Rectangle) !RenderWorkerRectParams {
         var rects = try RectArrayList.initCapacity(self.rects.allocator, 1);
-        try rects.append(rect);
+        rects.appendAssumeCapacity(rect);
         return RenderWorkerRectParams{
             .rects = rects,
             .width = self.width,
@@ -171,7 +170,7 @@ const RenderWorkerRectParams = struct {
 
     pub fn forkChildren(self: *RenderWorkerRectParams, rects: []const u32Rectangle) !RenderWorkerRectParams {
         var rectsList = try RectArrayList.initCapacity(self.rects.allocator, rects.len);
-        try rectsList.appendSlice(rects);
+        rectsList.appendSliceAssumeCapacity(rects);
         return RenderWorkerRectParams{
             .rects = rectsList,
             .width = self.width,
@@ -180,56 +179,69 @@ const RenderWorkerRectParams = struct {
         };
     }
 
-    fn _rectIsLessThan(_: void, lhs: ?u32Rectangle, rhs: ?u32Rectangle) bool {
-        if (lhs == null) return false;
-        if (rhs == null) return true;
-
-        return lhs.?.area() < rhs.?.area();
+    fn _rectIsLessThan(_: void, lhs: u32Rectangle, rhs: u32Rectangle) bool {
+        return lhs.area() < rhs.area();
     }
 
-    pub fn popBatch(self: *RenderWorkerRectParams) []u32Rectangle {
+    pub fn popBatch(self: *RenderWorkerRectParams) ![]u32Rectangle {
         if (self.isEmpty()) {
             return &.{};
         }
 
-        var batch: [3]?u32Rectangle = .{ null, null, null };
-        var i: usize = 0;
-        while (i < 3) {
-            if (self.rects.pop()) |rect| {
-                if (rect.area() > 0) {
-                    batch[i] = rect;
-                    i += 1;
+        var batch = batch: {
+            var rectsList: RectArrayList = undefined;
+
+            if (self.numRects() <= 3) {
+                rectsList = self.rects;
+                self.rects = RectArrayList.init(rectsList.allocator);
+
+                var i: usize = 0;
+                while (i < rectsList.items.len) {
+                    if (rectsList.items[i].area() <= 0) {
+                        _ = rectsList.swapRemove(i);
+                    } else {
+                        i += 1;
+                    }
                 }
             } else {
-                break;
-            }
-        }
+                rectsList = try RectArrayList.initCapacity(self.allocator().*, 3);
 
-        if (batch[0] == null) {
+                while (self.rects.items.len > 0 and rectsList.items.len < 3) {
+                    const rect = self.rects.swapRemove(0);
+                    if (rect.area() > 0) {
+                        rectsList.appendAssumeCapacity(rect);
+                    }
+                }
+            }
+
+            break :batch rectsList;
+        };
+
+        if (batch.items.len == 0) {
+            batch.deinit();
             return &.{};
         }
 
-        std.mem.sort(?u32Rectangle, &batch, {}, _rectIsLessThan);
+        try batch.ensureTotalCapacityPrecise(3);
 
-        if (batch[1] == null and batch[0].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
-            batch[0], batch[1] = batch[0].?.split();
+        std.mem.sortUnstable(u32Rectangle, batch.items, {}, _rectIsLessThan);
+
+        if (batch.items.len == 1 and batch.items[0].area() > RENDER_WORKER_RECT_BATCH_AREA) {
+            batch.items.len = 2;
+            batch.items[0], batch.items[1] = batch.items[0].split();
         }
 
-        if (batch[2] == null) {
-            if (batch[1] != null and batch[1].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
-                batch[1], batch[2] = batch[1].?.split();
-            } else if (batch[0].?.area() > RENDER_WORKER_RECT_BATCH_AREA) {
-                batch[0], batch[2] = batch[0].?.split();
+        if (batch.items.len < 3) {
+            if (batch.items.len == 2 and batch.items[1].area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                batch.items.len = 3;
+                batch.items[1], batch.items[2] = batch.items[1].split();
+            } else if (batch.items[0].area() > RENDER_WORKER_RECT_BATCH_AREA) {
+                batch.items.len = 3;
+                batch.items[0], batch.items[2] = batch.items[0].split();
             }
         }
 
-        if (batch[1] == null) {
-            return self.allocator().dupe(u32Rectangle, &.{ batch[0].? }) catch  &.{};
-        } else if (batch[2] == null) {
-            return self.allocator().dupe(u32Rectangle, &.{ batch[0].?, batch[1].? }) catch  &.{};
-        } else {
-            return self.allocator().dupe(u32Rectangle, &.{ batch[0].?, batch[1].?, batch[2].? }) catch  &.{};
-        }
+        return try batch.toOwnedSlice();
     }
 };
 
@@ -262,21 +274,19 @@ fn doRenderParallel() !void {
     pixels_mutex.lock();
     defer pixels_mutex.unlock();
 
-    const buffer: []u8 = @ptrCast(try allocator.alloc(
-        u32Rectangle,
-        (window_size.width * window_size.height / RENDER_WORKER_RECT_BATCH_AREA) * 10),
-    );
+    const buffer: []u8 = @ptrCast(try allocator.alloc(u32Rectangle, (window_size.width * window_size.height / RENDER_WORKER_RECT_BATCH_AREA) * 15));
     defer allocator.free(buffer);
 
     var fba = std.heap.FixedBufferAllocator.init(buffer);
+    const workerAllocator = fba.threadSafeAllocator();
 
     var params = RenderWorkerRectParams{
-        .rects = RectArrayList.init(fba.allocator()),
+        .rects = RectArrayList.init(workerAllocator),
         .width = window_size.width,
         .height = window_size.height,
         .scale = userScale,
     };
-    try params.rects.append(u32Rectangle {
+    try params.rects.append(u32Rectangle{
         .x = 0,
         .y = 0,
         .width = window_size.width,
@@ -290,9 +300,12 @@ const RenderWorkerRectFuture = spice.Future(*RenderWorkerRectParams, void);
 
 fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void {
     while (!params.isEmpty()) {
-        const batch = params.popBatch();
+        const batch = params.popBatch() catch |err| {
+            std.debug.print("Error popping batch: {}\n", .{err});
+            break;
+        };
         if (batch.len == 0) {
-            return;
+            break;
         }
         defer params.allocator().free(batch);
 
@@ -430,19 +443,24 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
             }
 
             const color = pointColor(point, escapeCount);
+            std.debug.assert(rowCol[0] < width and rowCol[1] < height);
             pixels.?.setPixel(rowCol[0], rowCol[1], color);
         }
 
         rect.* = rect.shrink(1);
 
         if (areBordersHomogeneous) {
+            const endY = rect.y + rect.height;
+            const endX = rect.x + rect.width;
+
             var y: u32 = rect.y;
-            while (y < (rect.y + rect.height)) : (y += 1) {
+            while (y < endY) : (y += 1) {
                 var x: u32 = rect.x;
-                while (x < (rect.x + rect.width)) : (x += 1) {
+                while (x < endX) : (x += 1) {
                     const rowCol = @Vector(2, u32){ x, y };
                     const point = pointFromRowCol(rowCol, width, height, scale);
                     const color = pointColor(point, initialEscapeCount.?);
+                    std.debug.assert(rowCol[0] < width and rowCol[1] < height);
                     pixels.?.setPixel(rowCol[0], rowCol[1], color);
                 }
             }
@@ -508,8 +526,7 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
                     totalZoom = 0;
                     try onScaleChanged(ctx);
                 },
-                .plus,
-                .equals => {
+                .plus, .equals => {
                     userScale = calculateCenterZoom(zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, zoomMultiplier));
                     totalZoom += 1;
                     try onScaleChanged(ctx);
@@ -587,7 +604,7 @@ fn escapeTime(c: mt.Complex, limit: usize) ?usize {
         if ((zRe2 + zIm2) > 4.0) {
             return i;
         }
-        z = mt.Complex {
+        z = mt.Complex{
             .re = zRe2 - zIm2 + c.re,
             .im = 2.0 * z.re * z.im + c.im,
         };
