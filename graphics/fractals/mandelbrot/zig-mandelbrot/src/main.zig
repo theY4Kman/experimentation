@@ -32,6 +32,7 @@ const mandelbrotMax = mt.Vec2{ 1.0, 1.0 };
 const MAX_ITERATIONS = 1024;
 const RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
 const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
+const RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = 5;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
@@ -368,12 +369,12 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
             }
         } else {
             t.tick();
-            _ = fillRect(
+            _ = renderRect(
                 params.width,
                 params.height,
                 params.scale,
                 &smallRect,
-                null,
+                RENDER_WORKER_RECT_BATCH_MAX_SPLITS,
             );
             t.tick();
         }
@@ -416,6 +417,49 @@ fn doRenderParallelWorker(t: *spice.Task, params: *RenderWorkerRectParams) void 
     }
 
     params.deinit();
+}
+
+fn renderRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_splits: u32) void {
+    if (rect.area() <= 0) {
+        return;
+    }
+
+    if (max_splits == 0) {
+        _ = fillRect(
+            width,
+            height,
+            scale,
+            rect,
+            null,
+        );
+        return;
+    }
+
+    if (fillRect(
+        width,
+        height,
+        scale,
+        rect,
+        RENDER_WORKER_RECT_BATCH_SHRINK_STEP,
+    )) {
+        return;
+    }
+
+    var chunkA, var chunkB = rect.split();
+    renderRect(
+        width,
+        height,
+        scale,
+        &chunkA,
+        max_splits - 1,
+    );
+    renderRect(
+        width,
+        height,
+        scale,
+        &chunkB,
+        max_splits - 1,
+    );
 }
 
 /// Fill a rectangle with the Mandelbrot set, using the given scale and max_shrink
