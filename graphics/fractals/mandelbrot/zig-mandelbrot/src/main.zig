@@ -542,11 +542,38 @@ fn calculateZoom(mousePixel: jok.Point, zoomScale: mt.Vec2) mt.Mat3 {
     return mat3ScaledXY(userScale, mousePoint, zoomScale);
 }
 
+fn calculatePan(startPixel: jok.Point, endPixel: jok.Point) mt.Mat3 {
+    const d_x = @as(mt.Float, startPixel.x - endPixel.x);
+    const d_y = @as(mt.Float, startPixel.y - endPixel.y);
+
+    if (d_x == 0 and d_y == 0) {
+        return userScale; // no movement
+    }
+
+    const pixelSize = mt.Vec2{
+        userScale.data[0] / @as(mt.Float, @floatFromInt(window_size.width)),
+        userScale.data[4] / @as(mt.Float, @floatFromInt(window_size.height)),
+    };
+
+    const delta = mt.Vec2{
+        d_x * pixelSize[0],
+        d_y * pixelSize[1],
+    };
+
+    var newScale = userScale;
+    newScale.data[2] += delta[0];
+    newScale.data[5] += delta[1];
+    return newScale;
+}
+
 fn calculateCenterZoom(zoomScale: mt.Vec2) mt.Mat3 {
     const mouseScale = mt.Vec2{ 0.5, 0.5 };
     const centerPoint = projectMat3(userScale, mouseScale);
     return mat3ScaledXY(userScale, centerPoint, zoomScale);
 }
+
+var isDragging = false;
+var dragStartPoint: jok.Point = undefined;
 
 pub fn event(ctx: jok.Context, e: jok.Event) !void {
     switch (e) {
@@ -563,6 +590,24 @@ pub fn event(ctx: jok.Context, e: jok.Event) !void {
                 userScale = calculateZoom(mouseState.pos, zm.vec.scale(mt.Vec2{ 1.0, 1.0 }, s));
                 totalZoom += mouse_event.delta_y;
 
+                try onScaleChanged(ctx);
+            }
+        },
+        .mouse_button_down => |mouse_event| {
+            if (mouse_event.button == .left) {
+                isDragging = true;
+                dragStartPoint = mouse_event.pos;
+            }
+        },
+        .mouse_button_up => |mouse_event| {
+            if (isDragging and mouse_event.button == .left) {
+                isDragging = false;
+            }
+        },
+        .mouse_motion => |mouse_event| {
+            if (isDragging) {
+                userScale = calculatePan(dragStartPoint, mouse_event.pos);
+                dragStartPoint = mouse_event.pos; // update the start point for the next motion
                 try onScaleChanged(ctx);
             }
         },
