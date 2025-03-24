@@ -22,6 +22,7 @@ var batchpool: j2d.BatchPool(64, false) = undefined;
 var texture: ?jok.Texture = null;
 var pixels: ?jok.Texture.PixelData = null;
 var pixels_mutex = std.Thread.Mutex{};
+var pixels_changed = true;
 
 var window_size: jok.Size = .{ .width = 0, .height = 0 };
 
@@ -445,6 +446,7 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
             const color = pointColor(point, escapeCount);
             std.debug.assert(rowCol[0] < width and rowCol[1] < height);
             pixels.?.setPixel(rowCol[0], rowCol[1], color);
+            pixels_changed = true;
         }
 
         rect.* = rect.shrink(1);
@@ -462,6 +464,7 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
                     const color = pointColor(point, initialEscapeCount.?);
                     std.debug.assert(rowCol[0] < width and rowCol[1] < height);
                     pixels.?.setPixel(rowCol[0], rowCol[1], color);
+                    pixels_changed = true;
                 }
             }
             return true;
@@ -565,11 +568,14 @@ pub fn update(ctx: jok.Context) !void {
 }
 
 pub fn draw(ctx: jok.Context) !void {
-    if (texture) |t| {
-        if (pixels) |p| {
-            try t.update(p);
+    if (pixels_changed) {
+        if (texture) |t| {
+            if (pixels) |p| {
+                try t.update(p);
+                pixels_changed = false;
+            }
+            try ctx.renderer().drawTexture(t, null, null);
         }
-        try ctx.renderer().drawTexture(t, null, null);
     }
 }
 
