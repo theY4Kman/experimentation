@@ -7,9 +7,11 @@ pub fn build(b: *std.Build) void {
 
     const zm = b.dependency("zm", .{});
     const spice = b.dependency("spice", .{});
+    const clap = b.dependency("clap", .{});
 
     const zm_mod = zm.module("zm");
     const spice_mod = spice.module("spice");
+    const clap_mod = clap.module("clap");
 
     const exe = jok.createDesktopApp(
         b,
@@ -22,12 +24,14 @@ pub fn build(b: *std.Build) void {
             .additional_deps = &.{
                 .{ .name = "zm", .mod = zm_mod },
                 .{ .name = "spice", .mod = spice_mod },
+                .{ .name = "clap", .mod = clap_mod },
             },
         },
     );
 
     exe.root_module.addImport("zm", zm_mod);
     exe.root_module.addImport("spice", spice_mod);
+    exe.root_module.addImport("clap", clap_mod);
 
     const install_cmd = b.addInstallArtifact(exe, .{});
 

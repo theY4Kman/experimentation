@@ -5,6 +5,7 @@ const sdl = jok.sdl;
 const j2d = jok.j2d;
 const zm = @import("zm");
 const spice = @import("spice");
+const clap = @import("clap");
 
 const ourMath = @import("math.zig");
 const mt = ourMath.MathTypes(f64);
@@ -29,24 +30,29 @@ var window_size: jok.Size = .{ .width = 0, .height = 0 };
 const mandelbrotMin = mt.Vec2{ -2.5, -1.0 };
 const mandelbrotMax = mt.Vec2{ 1.0, 1.0 };
 
-const MAX_ITERATIONS = 1024;
-const RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
-const RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
-const RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = 5;
+const DEFAULT_MAX_ITERATIONS = 4096;
+const DEFAULT_RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
+const DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
+const DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = 8;
+
+var MAX_ITERATIONS: u32 = 1024;
+var RENDER_WORKER_RECT_BATCH_AREA: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_AREA;
+var RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP;
+var RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
-        .{ @intFromFloat(0.0000 * MAX_ITERATIONS), "#000635" },
-        .{ @intFromFloat(0.0002 * MAX_ITERATIONS), "#000764" },
-        .{ @intFromFloat(0.0078 * MAX_ITERATIONS), "#13399a" },
-        .{ @intFromFloat(0.0392 * MAX_ITERATIONS), "#1360d4" },
-        .{ @intFromFloat(0.1600 * MAX_ITERATIONS), "#206bcb" },
-        .{ @intFromFloat(0.4200 * MAX_ITERATIONS), "#edffff" },
-        .{ @intFromFloat(0.6425 * MAX_ITERATIONS), "#ffaa00" },
-        .{ @intFromFloat(0.8575 * MAX_ITERATIONS), "#000200" },
+        .{ @intFromFloat(0.0000 * DEFAULT_MAX_ITERATIONS), "#000635" },
+        .{ @intFromFloat(0.0002 * DEFAULT_MAX_ITERATIONS), "#000764" },
+        .{ @intFromFloat(0.0078 * DEFAULT_MAX_ITERATIONS), "#13399a" },
+        .{ @intFromFloat(0.0392 * DEFAULT_MAX_ITERATIONS), "#1360d4" },
+        .{ @intFromFloat(0.1600 * DEFAULT_MAX_ITERATIONS), "#206bcb" },
+        .{ @intFromFloat(0.4200 * DEFAULT_MAX_ITERATIONS), "#edffff" },
+        .{ @intFromFloat(0.6425 * DEFAULT_MAX_ITERATIONS), "#ffaa00" },
+        .{ @intFromFloat(0.8575 * DEFAULT_MAX_ITERATIONS), "#000200" },
     },
 ) catch ColorGradient(u8).GREYSCALE;
-var colorGrad = baseColorGrad.compute(2048);
+var colorGrad = baseColorGrad.compute(8192);
 
 const zoomPercent = 0.1;
 const zoomMultiplier = 1.0 - zoomPercent;
@@ -60,28 +66,43 @@ const baseScale = mt.Mat3{
 var userScale = baseScale;
 var totalZoom: i32 = 0;
 
-fn projectMat3(mat: mt.Mat3, point: mt.Vec2) mt.Vec2 {
-    return mt.Vec2{
-        mat.data[0] * point[0] + mat.data[1] * point[1] + mat.data[2],
-        mat.data[3] * point[0] + mat.data[4] * point[1] + mat.data[5],
-    };
-}
-
-fn mat3ScaledXY(mat: mt.Mat3, around: mt.Vec2, scale: mt.Vec2) mt.Mat3 {
-    const preX = mat.data[2] - around[0];
-    const preY = mat.data[5] - around[1];
-
-    return mt.Mat3{
-        .data = .{
-            mat.data[0] * scale[0], mat.data[1] * scale[0], preX * scale[0] + around[0],
-            mat.data[3] * scale[1], mat.data[4] * scale[1], preY * scale[1] + around[1],
-            0.0,                    0.0,                    1.0,
-        },
-    };
-}
-
 pub fn init(ctx: jok.Context) !void {
     allocator = ctx.allocator();
+
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help                    Display this help and exit
+        \\-i, --max-iterations <u32>    Maximum number of escape iterations to calculate
+        \\-a, --batch-area <u32>        Area of a rectangle to render in a single batch
+        \\-s, --shrink-step <u32>       Number of pixels to shrink a rectangle by
+        \\-m, --max-splits <u32>        Maximum number of times to split a rectangle in a single batch
+    );
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+        .diagnostic = &diag,
+        .allocator = allocator,
+    }) catch |err| {
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer res.deinit();
+
+    if (res.args.help != 0) {
+        return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+    }
+
+    if (res.args.@"max-iterations") |max_iterations| {
+        MAX_ITERATIONS = max_iterations;
+    }
+    if (res.args.@"batch-area") |batch_area| {
+        RENDER_WORKER_RECT_BATCH_AREA = batch_area;
+    }
+    if (res.args.@"shrink-step") |shrink_step| {
+        RENDER_WORKER_RECT_BATCH_SHRINK_STEP = shrink_step;
+    }
+    if (res.args.@"max-splits") |max_splits| {
+        RENDER_WORKER_RECT_BATCH_MAX_SPLITS = max_splits;
+    }
 
     const window = ctx.window();
     window.setTitle("Interactive Mandelbrot Set");
