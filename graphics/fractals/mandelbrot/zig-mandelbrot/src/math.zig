@@ -10,6 +10,26 @@ pub fn MathTypes(comptime FloatType: type) type {
         pub const Complex = math.complex.Complex(FloatType);
         pub const Vec2 = @Vector(2, FloatType);
         pub const Mat3 = zm.matrix.Mat3Base(FloatType);
+
+        pub fn projectMat3(mat: Mat3, point: Vec2) Vec2 {
+            return Vec2{
+                mat.data[0] * point[0] + mat.data[1] * point[1] + mat.data[2],
+                mat.data[3] * point[0] + mat.data[4] * point[1] + mat.data[5],
+            };
+        }
+
+        pub fn mat3ScaledXY(mat: Mat3, around: Vec2, scale: Vec2) Mat3 {
+            const preX = mat.data[2] - around[0];
+            const preY = mat.data[5] - around[1];
+
+            return Mat3{
+                .data = .{
+                    mat.data[0] * scale[0], mat.data[1] * scale[0], preX * scale[0] + around[0],
+                    mat.data[3] * scale[1], mat.data[4] * scale[1], preY * scale[1] + around[1],
+                    0.0,                    0.0,                    1.0,
+                },
+            };
+        }
     };
 }
 

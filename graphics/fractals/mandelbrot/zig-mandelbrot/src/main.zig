@@ -521,7 +521,7 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
 inline fn pointFromRowCol(rowCol: @Vector(2, u32), width: u32, height: u32, scale: mt.Mat3) mt.Complex {
     const xScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol[0]))) / @as(mt.Float, @floatFromInt(width));
     const yScale = @as(mt.Float, @as(mt.Float, @floatFromInt(rowCol[1]))) / @as(mt.Float, @floatFromInt(height));
-    const vec = projectMat3(scale, mt.Vec2{ xScale, yScale });
+    const vec = mt.projectMat3(scale, mt.Vec2{ xScale, yScale });
     return mt.Complex{ .re = vec[0], .im = vec[1] };
 }
 
@@ -537,9 +537,9 @@ fn calculateZoom(mousePixel: jok.Point, zoomScale: mt.Vec2) mt.Mat3 {
         @as(mt.Float, @as(mt.Float, mousePixel.x)) / @as(mt.Float, @floatFromInt(window_size.width)),
         @as(mt.Float, @as(mt.Float, mousePixel.y)) / @as(mt.Float, @floatFromInt(window_size.height)),
     };
-    const mousePoint = projectMat3(userScale, mouseScale);
+    const mousePoint = mt.projectMat3(userScale, mouseScale);
 
-    return mat3ScaledXY(userScale, mousePoint, zoomScale);
+    return mt.mat3ScaledXY(userScale, mousePoint, zoomScale);
 }
 
 fn calculatePan(startPixel: jok.Point, endPixel: jok.Point) mt.Mat3 {
@@ -568,8 +568,8 @@ fn calculatePan(startPixel: jok.Point, endPixel: jok.Point) mt.Mat3 {
 
 fn calculateCenterZoom(zoomScale: mt.Vec2) mt.Mat3 {
     const mouseScale = mt.Vec2{ 0.5, 0.5 };
-    const centerPoint = projectMat3(userScale, mouseScale);
-    return mat3ScaledXY(userScale, centerPoint, zoomScale);
+    const centerPoint = mt.projectMat3(userScale, mouseScale);
+    return mt.mat3ScaledXY(userScale, centerPoint, zoomScale);
 }
 
 var isDragging = false;
