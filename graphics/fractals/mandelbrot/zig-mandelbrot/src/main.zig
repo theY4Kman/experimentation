@@ -12,8 +12,8 @@ const mt = ourMath.MathTypes(f64);
 const u32Rectangle = ourMath.u32Rectangle;
 const ColorGradient = @import("color.zig").ColorGradient;
 
-//pub const jok_enable_post_processing = true;
-pub const jok_enable_post_processing = false;
+pub const jok_enable_post_processing = true;
+// pub const jok_enable_post_processing = false;
 
 var allocator: std.mem.Allocator = undefined;
 
@@ -37,11 +37,31 @@ const DEFAULT_MAX_ITERATIONS = 4096;
 const DEFAULT_RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
 const DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
 const DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = 8;
+const DEFAULT_AA_SAMPLES: u32 = 4; // 2x2 grid
+const DEFAULT_AA_THRESHOLD: f32 = 0.1;
+
+const AAMethod = enum {
+    none,
+    ssaa,
+    adaptive,
+    post,
+
+    pub fn parse(str: []const u8) !AAMethod {
+        if (std.mem.eql(u8, str, "none")) return .none;
+        if (std.mem.eql(u8, str, "ssaa")) return .ssaa;
+        if (std.mem.eql(u8, str, "adaptive")) return .adaptive;
+        if (std.mem.eql(u8, str, "post")) return .post;
+        return error.InvalidAAMethod;
+    }
+};
 
 var MAX_ITERATIONS: u32 = DEFAULT_MAX_ITERATIONS;
 var RENDER_WORKER_RECT_BATCH_AREA: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_AREA;
 var RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP;
 var RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS;
+var AA_METHOD: AAMethod = .none;
+var AA_SAMPLES: u32 = DEFAULT_AA_SAMPLES;
+var AA_THRESHOLD: f32 = DEFAULT_AA_THRESHOLD;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
@@ -77,10 +97,19 @@ pub fn init(ctx: jok.Context) !void {
         \\-a, --batch-area <u32>        Area of a rectangle to render in a single batch
         \\-s, --shrink-step <u32>       Number of pixels to shrink a rectangle by
         \\-m, --max-splits <u32>        Maximum number of times to split a rectangle in a single batch
+        \\    --aa-method <STR>         Anti-aliasing method (none|ssaa|adaptive|post) [default: none]
+        \\    --aa-samples <u32>        Samples per pixel for SSAA (e.g., 4=2x2, 9=3x3) [default: 4]
+        \\    --aa-threshold <F32>      Edge detection threshold for adaptive AA [default: 0.1]
     );
 
+    const parsers = comptime .{
+        .STR = clap.parsers.string,
+        .F32 = clap.parsers.float(f32),
+        .u32 = clap.parsers.int(u32, 10),
+    };
+
     var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+    var res = clap.parse(clap.Help, &params, parsers, .{
         .diagnostic = &diag,
         .allocator = allocator,
     }) catch |err| {
@@ -106,6 +135,18 @@ pub fn init(ctx: jok.Context) !void {
     if (res.args.@"max-splits") |max_splits| {
         RENDER_WORKER_RECT_BATCH_MAX_SPLITS = max_splits;
     }
+    if (res.args.@"aa-method") |aa_method_str| {
+        AA_METHOD = AAMethod.parse(aa_method_str) catch {
+            std.debug.print("Invalid AA method: {s}. Valid options: none, ssaa, adaptive, post\n", .{aa_method_str});
+            return error.InvalidAAMethod;
+        };
+    }
+    if (res.args.@"aa-samples") |aa_samples| {
+        AA_SAMPLES = aa_samples;
+    }
+    if (res.args.@"aa-threshold") |aa_threshold| {
+        AA_THRESHOLD = aa_threshold;
+    }
 
     const window = ctx.window();
     window.setTitle("Interactive Mandelbrot Set");
@@ -113,7 +154,7 @@ pub fn init(ctx: jok.Context) !void {
     window.setResizable(true);
     window_size = ctx.window().getSize();
 
-    if (jok_enable_post_processing) {
+    if (jok_enable_post_processing and AA_METHOD == .post) {
         ctx.addPostProcessing(.{
             .ppfn = postProcess,
             .region = null, // You can specify a region if needed
@@ -132,20 +173,89 @@ pub fn init(ctx: jok.Context) !void {
     try render(ctx);
 }
 
-fn postProcess(pos: jok.Point, data1: ?*anyopaque, data2: ?*anyopaque) ?jok.Color {
-    _ = data1; // Unused in this example
-    _ = data2; // Unused in this example
+fn colorLuminance(c: jok.Color) f32 {
+    // Compute luminance using standard weights
+    return 0.299 * @as(f32, @floatFromInt(c.r)) +
+        0.587 * @as(f32, @floatFromInt(c.g)) +
+        0.114 * @as(f32, @floatFromInt(c.b));
+}
 
-    // This function can be used for post-processing effects
-    // For now, we just return the color from the texture at the given position
-    if (pixels) |p| {
-        const x = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.width)) * pos.x));
-        const y = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.height)) * pos.y));
-        var c = p.getPixel(x, y);
-        c.a = if (c.r + c.b + c.g > 128) 255 else 128;
-        return c;
+fn postProcess(pos: jok.Point, data1: ?*anyopaque, data2: ?*anyopaque) ?jok.Color {
+    _ = data1;
+    _ = data2;
+
+    if (pixels == null) return null;
+    const p = pixels.?;
+
+    const x = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.width)) * pos.x));
+    const y = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.height)) * pos.y));
+
+    const center = p.getPixel(x, y);
+
+    // If not using post-processing AA, just return the pixel
+    if (AA_METHOD != .post) {
+        return center;
     }
-    return null; // Return null if no pixel data is available
+
+    // FXAA-lite: detect edges and smooth them
+    const centerLum = colorLuminance(center);
+
+    // Sample neighbors (with bounds checking)
+    const left = if (x > 0) p.getPixel(x - 1, y) else center;
+    const right = if (x < window_size.width - 1) p.getPixel(x + 1, y) else center;
+    const up = if (y > 0) p.getPixel(x, y - 1) else center;
+    const down = if (y < window_size.height - 1) p.getPixel(x, y + 1) else center;
+
+    const leftLum = colorLuminance(left);
+    const rightLum = colorLuminance(right);
+    const upLum = colorLuminance(up);
+    const downLum = colorLuminance(down);
+
+    // Compute edge strength
+    const lumRange = @max(
+        @max(@max(leftLum, rightLum), @max(upLum, downLum)),
+        centerLum,
+    ) - @min(
+        @min(@min(leftLum, rightLum), @min(upLum, downLum)),
+        centerLum,
+    );
+
+    // If edge strength is below threshold, no AA needed
+    const edgeThreshold = 32.0; // Adjust this for sensitivity
+    if (lumRange < edgeThreshold) {
+        return center;
+    }
+
+    // Compute blend direction (horizontal or vertical edge)
+    const horizEdge = @abs((leftLum + rightLum) - 2.0 * centerLum);
+    const vertEdge = @abs((upLum + downLum) - 2.0 * centerLum);
+
+    // Blend with neighbors based on edge direction
+    var r: u32 = center.r;
+    var g: u32 = center.g;
+    var b: u32 = center.b;
+    var count: u32 = 1;
+
+    if (horizEdge > vertEdge) {
+        // Horizontal edge, blend with left/right
+        r += left.r + right.r;
+        g += left.g + right.g;
+        b += left.b + right.b;
+        count += 2;
+    } else {
+        // Vertical edge, blend with up/down
+        r += up.r + down.r;
+        g += up.g + down.g;
+        b += up.b + down.b;
+        count += 2;
+    }
+
+    return jok.Color{
+        .r = @intCast(r / count),
+        .g = @intCast(g / count),
+        .b = @intCast(b / count),
+        .a = center.a,
+    };
 }
 
 fn resizeTexture(ctx: jok.Context) !void {
@@ -529,6 +639,7 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
 
         var borderIter = rect.iterateBorders();
         while (borderIter.next()) |rowCol| {
+            // For border iteration, we need the escape count to check homogeneity
             const point = pointFromRowCol(rowCol, width, height, scale);
             const escapeCount = escapeTime(point, MAX_ITERATIONS) orelse MAX_ITERATIONS;
 
@@ -538,7 +649,8 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
                 areBordersHomogeneous = false;
             }
 
-            const color = pointColor(point, escapeCount);
+            // samplePixel will internally decide whether to use AA based on AA_METHOD
+            const color = samplePixel(rowCol, width, height, scale);
             std.debug.assert(rowCol[0] < width and rowCol[1] < height);
             pixels.?.setPixel(rowCol[0], rowCol[1], color);
             pixels_changed = true;
@@ -555,8 +667,8 @@ fn fillRect(width: u32, height: u32, scale: mt.Mat3, rect: *u32Rectangle, max_sh
                 var x: u32 = rect.x;
                 while (x < endX) : (x += 1) {
                     const rowCol = @Vector(2, u32){ x, y };
-                    const point = pointFromRowCol(rowCol, width, height, scale);
-                    const color = pointColor(point, initialEscapeCount.?);
+                    // samplePixel will internally decide whether to use AA
+                    const color = samplePixel(rowCol, width, height, scale);
                     std.debug.assert(rowCol[0] < width and rowCol[1] < height);
                     pixels.?.setPixel(rowCol[0], rowCol[1], color);
                     pixels_changed = true;
@@ -576,11 +688,111 @@ inline fn pointFromRowCol(rowCol: @Vector(2, u32), width: u32, height: u32, scal
     return mt.Complex{ .re = vec[0], .im = vec[1] };
 }
 
+inline fn pointFromRowColWithOffset(rowCol: @Vector(2, u32), offset: @Vector(2, f32), width: u32, height: u32, scale: mt.Mat3) mt.Complex {
+    const xScale = (@as(mt.Float, @floatFromInt(rowCol[0])) + offset[0]) / @as(mt.Float, @floatFromInt(width));
+    const yScale = (@as(mt.Float, @floatFromInt(rowCol[1])) + offset[1]) / @as(mt.Float, @floatFromInt(height));
+    const vec = mt.projectMat3(scale, mt.Vec2{ xScale, yScale });
+    return mt.Complex{ .re = vec[0], .im = vec[1] };
+}
+
 inline fn pointColor(point: mt.Complex, escapeCount: usize) jok.Color {
     const smoothed = std.math.log2(std.math.log2(point.squaredMagnitude() + 1.0) / 2.0);
     const colorIdxf = std.math.sqrt(@as(mt.Float, @floatFromInt(escapeCount)) + 10.0 - smoothed) * @as(mt.Float, @floatFromInt(MAX_ITERATIONS));
     const colorIdx = @as(usize, @intFromFloat(colorIdxf)) % MAX_ITERATIONS;
     return colorGrad.at(colorIdx);
+}
+
+/// Check if a pixel is likely on an edge by comparing escape counts with neighbors
+fn isEdgePixel(rowCol: @Vector(2, u32), escapeCount: usize, width: u32, height: u32, scale: mt.Mat3) bool {
+    // Check a few neighbors to see if there's high variance
+    const x = rowCol[0];
+    const y = rowCol[1];
+
+    const neighbors = [_]@Vector(2, i32){
+        .{ -1, 0 }, // left
+        .{ 1, 0 }, // right
+        .{ 0, -1 }, // up
+        .{ 0, 1 }, // down
+    };
+
+    var max_diff: usize = 0;
+    for (neighbors) |offset| {
+        const nx = @as(i32, @intCast(x)) + offset[0];
+        const ny = @as(i32, @intCast(y)) + offset[1];
+
+        if (nx < 0 or nx >= width or ny < 0 or ny >= height) continue;
+
+        const nrowCol = @Vector(2, u32){ @intCast(nx), @intCast(ny) };
+        const npoint = pointFromRowCol(nrowCol, width, height, scale);
+        const nescapeCount = escapeTime(npoint, MAX_ITERATIONS) orelse MAX_ITERATIONS;
+
+        const diff = if (escapeCount > nescapeCount)
+            escapeCount - nescapeCount
+        else
+            nescapeCount - escapeCount;
+
+        max_diff = @max(max_diff, diff);
+    }
+
+    // If the difference exceeds threshold (as a fraction of max iterations), it's an edge
+    const threshold_iterations = @as(usize, @intFromFloat(AA_THRESHOLD * @as(f32, @floatFromInt(MAX_ITERATIONS))));
+    return max_diff > threshold_iterations;
+}
+
+/// Sample a pixel with SSAA if enabled, otherwise just sample the center
+fn samplePixel(rowCol: @Vector(2, u32), width: u32, height: u32, scale: mt.Mat3) jok.Color {
+    // First, get the basic sample
+    const point = pointFromRowCol(rowCol, width, height, scale);
+    const escapeCount = escapeTime(point, MAX_ITERATIONS) orelse MAX_ITERATIONS;
+
+    // Decide if we need SSAA
+    const use_ssaa = switch (AA_METHOD) {
+        .none => false,
+        .ssaa => true,
+        .adaptive => isEdgePixel(rowCol, escapeCount, width, height, scale),
+        .post => false, // Post-processing handles AA separately
+    };
+
+    if (!use_ssaa) {
+        return pointColor(point, escapeCount);
+    }
+
+    // SSAA: Sample multiple points and average
+    const samples_per_side = @as(u32, @intFromFloat(@sqrt(@as(f32, @floatFromInt(AA_SAMPLES)))));
+    const step = 1.0 / @as(f32, @floatFromInt(samples_per_side));
+    const offset_start = step / 2.0; // Center the sample grid
+
+    var r: u32 = 0;
+    var g: u32 = 0;
+    var b: u32 = 0;
+    var a: u32 = 0;
+
+    var sy: u32 = 0;
+    while (sy < samples_per_side) : (sy += 1) {
+        var sx: u32 = 0;
+        while (sx < samples_per_side) : (sx += 1) {
+            const offset = @Vector(2, f32){
+                offset_start + @as(f32, @floatFromInt(sx)) * step,
+                offset_start + @as(f32, @floatFromInt(sy)) * step,
+            };
+            const spoint = pointFromRowColWithOffset(rowCol, offset, width, height, scale);
+            const sescapeCount = escapeTime(spoint, MAX_ITERATIONS) orelse MAX_ITERATIONS;
+            const color = pointColor(spoint, sescapeCount);
+
+            r += color.r;
+            g += color.g;
+            b += color.b;
+            a += color.a;
+        }
+    }
+
+    const num_samples = samples_per_side * samples_per_side;
+    return jok.Color{
+        .r = @intCast(r / num_samples),
+        .g = @intCast(g / num_samples),
+        .b = @intCast(b / num_samples),
+        .a = @intCast(a / num_samples),
+    };
 }
 
 fn calculateZoom(mousePixel: jok.Point, zoomScale: mt.Vec2) mt.Mat3 {
