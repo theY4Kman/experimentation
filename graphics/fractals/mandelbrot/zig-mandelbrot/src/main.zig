@@ -12,6 +12,9 @@ const mt = ourMath.MathTypes(f64);
 const u32Rectangle = ourMath.u32Rectangle;
 const ColorGradient = @import("color.zig").ColorGradient;
 
+//pub const jok_enable_post_processing = true;
+pub const jok_enable_post_processing = false;
+
 var allocator: std.mem.Allocator = undefined;
 
 var thread_pool: spice.ThreadPool = undefined;
@@ -35,24 +38,23 @@ const DEFAULT_RENDER_WORKER_RECT_BATCH_AREA: u32 = 1024;
 const DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = 2;
 const DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = 8;
 
-var MAX_ITERATIONS: u32 = 1024;
+var MAX_ITERATIONS: u32 = DEFAULT_MAX_ITERATIONS;
 var RENDER_WORKER_RECT_BATCH_AREA: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_AREA;
 var RENDER_WORKER_RECT_BATCH_SHRINK_STEP: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_SHRINK_STEP;
 var RENDER_WORKER_RECT_BATCH_MAX_SPLITS: u32 = DEFAULT_RENDER_WORKER_RECT_BATCH_MAX_SPLITS;
 
 const baseColorGrad = ColorGradient(usize).init(
     &.{
-        .{ @intFromFloat(0.0000 * DEFAULT_MAX_ITERATIONS), "#000635" },
-        .{ @intFromFloat(0.0002 * DEFAULT_MAX_ITERATIONS), "#000764" },
-        .{ @intFromFloat(0.0078 * DEFAULT_MAX_ITERATIONS), "#13399a" },
-        .{ @intFromFloat(0.0392 * DEFAULT_MAX_ITERATIONS), "#1360d4" },
-        .{ @intFromFloat(0.1600 * DEFAULT_MAX_ITERATIONS), "#206bcb" },
-        .{ @intFromFloat(0.4200 * DEFAULT_MAX_ITERATIONS), "#edffff" },
-        .{ @intFromFloat(0.6425 * DEFAULT_MAX_ITERATIONS), "#ffaa00" },
-        .{ @intFromFloat(0.8575 * DEFAULT_MAX_ITERATIONS), "#000200" },
+        .{ @intFromFloat(0.0000 * DEFAULT_MAX_ITERATIONS), "#00111f" },
+        .{ @intFromFloat(0.0150 * DEFAULT_MAX_ITERATIONS), "#003355" },
+        .{ @intFromFloat(0.0800 * DEFAULT_MAX_ITERATIONS), "#007899" },
+        .{ @intFromFloat(0.2500 * DEFAULT_MAX_ITERATIONS), "#00d4ff" },
+        .{ @intFromFloat(0.6000 * DEFAULT_MAX_ITERATIONS), "#b0fff6" },
+        .{ @intFromFloat(0.8500 * DEFAULT_MAX_ITERATIONS), "#ffffff" },
+        .{ @intFromFloat(1.0000 * DEFAULT_MAX_ITERATIONS), "#000000" },
     },
 ) catch ColorGradient(u8).GREYSCALE;
-var colorGrad = baseColorGrad.compute(8192);
+var colorGrad = baseColorGrad.compute(DEFAULT_MAX_ITERATIONS);
 
 const zoomPercent = 0.1;
 const zoomMultiplier = 1.0 - zoomPercent;
@@ -88,7 +90,8 @@ pub fn init(ctx: jok.Context) !void {
     defer res.deinit();
 
     if (res.args.help != 0) {
-        return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+        defer ctx.kill();
+        return clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{});
     }
 
     if (res.args.@"max-iterations") |max_iterations| {
@@ -110,12 +113,39 @@ pub fn init(ctx: jok.Context) !void {
     window.setResizable(true);
     window_size = ctx.window().getSize();
 
+    if (jok_enable_post_processing) {
+        ctx.addPostProcessing(.{
+            .ppfn = postProcess,
+            .region = null, // You can specify a region if needed
+            .data1 = null, // You can pass additional data if needed
+            .data2 = null, // You can pass additional data if needed
+        }) catch {
+            std.debug.print("Failed to add post-processing effect\n", .{});
+        };
+    }
+
     render_thread = try std.Thread.spawn(.{}, renderWorker, .{ctx});
 
     batchpool = try @TypeOf(batchpool).init(ctx);
     try resizeTexture(ctx);
 
     try render(ctx);
+}
+
+fn postProcess(pos: jok.Point, data1: ?*anyopaque, data2: ?*anyopaque) ?jok.Color {
+    _ = data1; // Unused in this example
+    _ = data2; // Unused in this example
+
+    // This function can be used for post-processing effects
+    // For now, we just return the color from the texture at the given position
+    if (pixels) |p| {
+        const x = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.width)) * pos.x));
+        const y = @as(u32, @intFromFloat(@as(f32, @floatFromInt(window_size.height)) * pos.y));
+        var c = p.getPixel(x, y);
+        c.a = if (c.r + c.b + c.g > 128) 255 else 128;
+        return c;
+    }
+    return null; // Return null if no pixel data is available
 }
 
 fn resizeTexture(ctx: jok.Context) !void {
@@ -678,13 +708,19 @@ pub fn update(ctx: jok.Context) !void {
 }
 
 pub fn draw(ctx: jok.Context) !void {
+    _ = ctx;
+
     if (pixels_changed) {
         if (texture) |t| {
             if (pixels) |p| {
                 try t.update(p);
                 pixels_changed = false;
             }
-            try ctx.renderer().drawTexture(t, null, null);
+
+            const b = try batchpool.new(.{});
+            try b.image(t, jok.Point{ .x = 0, .y = 0 }, .{});
+            // try ctx.renderer().drawTexture(t, null, null);
+            b.submit();
         }
     }
 }

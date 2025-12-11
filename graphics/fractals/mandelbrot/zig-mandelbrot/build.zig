@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) void {
             .additional_deps = &.{
                 .{ .name = "zm", .mod = zm_mod },
                 .{ .name = "spice", .mod = spice_mod },
+                .{ .name = "clap", .mod = clap_mod },
             },
         },
     );

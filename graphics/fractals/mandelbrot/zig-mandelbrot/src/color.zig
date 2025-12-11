@@ -106,6 +106,81 @@ fn _ColorGradient(comptime Domain: type, comptime N: usize) type {
         }
     };
 }
+//
+// fn computeGradient(
+//     comptime Domain: type,
+//     colorsHSL: []const[4]f32,
+//     domains: []const Domain,
+//     computed: []jok.Color,
+// ) void {
+//     //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//     //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//     @compileLog("colorsHSL len: ", colorsHSL.len);
+//     @compileLog("domains len: ", domains.len);
+//     @compileLog("computed len: ", computed.len);
+//     //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//     //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//
+//     if (colorsHSL.len == 1) {
+//         const color = jok.Color.fromHSL(colorsHSL[0]);
+//         for (0..computed.len) |i| {
+//             computed[i] = color;
+//         }
+//     } else {
+//         const min_domain = domains[0];
+//         const max_domain = domains[domains.len - 1];
+//
+//         var i = 0;
+//         var stepIdx = 0;
+//         const increment = (max_domain - min_domain) / (
+//             switch (@typeInfo(Domain)) {
+//                 .float => @as(Domain, @floatFromInt(computed.len)),
+//                 .int => computed.len,
+//                 else => {
+//                     @compileError("Unsupported domain type");
+//                 }
+//             }
+//         );
+//         var acc = min_domain;
+//
+//         //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//         @compileLog("min_domain: ", min_domain);
+//         @compileLog("max_domain: ", max_domain);
+//         @compileLog("increment: ", increment);
+//         //XXX///////////////////////////////////////////////////////////////////////////////////////////
+//
+//         var lowHSL = colorsHSL[0];
+//         var lowDomain = domains[0];
+//
+//         var highHSL = colorsHSL[1];
+//         var highDomain = domains[1];
+//
+//         while (i < max_domain) : ({ i += 1; acc += increment; }) {
+//             if (acc >= highDomain) {
+//                 computed[i] = jok.Color.fromHSL(highHSL);
+//
+//                 lowHSL = highHSL;
+//                 lowDomain = highDomain;
+//
+//                 stepIdx += 1;
+//                 highHSL = colorsHSL[stepIdx];
+//                 highDomain = domains[stepIdx];
+//             } else {
+//                 const range = highDomain - lowDomain;
+//                 const ratio = @as(f32, @floatFromInt(acc - lowDomain)) / @as(f32, @floatFromInt(range));
+//
+//                 const blendedHSL = [_]f32{
+//                     interp_angle(lowHSL[0], highHSL[0], ratio),
+//                     lowHSL[1] + ratio * (highHSL[1] - lowHSL[1]),
+//                     lowHSL[2] + ratio * (highHSL[2] - lowHSL[2]),
+//                     lowHSL[3] + ratio * (highHSL[3] - lowHSL[3]),
+//                 };
+//
+//                 computed[i] = jok.Color.fromHSL(blendedHSL);
+//             }
+//         }
+//     }
+// }
 
 fn _ComputedColorGradient(comptime Domain: type, comptime N: usize, comptime num_colors: usize) type {
     return struct {
@@ -114,7 +189,7 @@ fn _ComputedColorGradient(comptime Domain: type, comptime N: usize, comptime num
         colors: [N]jok.Color,
         num_slots: usize = N,
 
-        fn init(base:_ColorGradient(Domain, num_colors)) Self {
+        fn init(base: _ColorGradient(Domain, num_colors)) Self {
             // XXX(zk): this is outrageous :P
             @setEvalBranchQuota(999999);
 
